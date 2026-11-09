@@ -15,6 +15,7 @@ Other modules use it like this:
 """
 import base64
 import copy
+import hashlib
 import json
 import zlib
 from collections import OrderedDict
@@ -235,6 +236,16 @@ class BoardState:
         self.seq = payload['seq']
         self.log = []
 
+    def checksum(self):
+        """Fingerprint of the whole board: sha1 of the objects as sorted JSON.
+
+        Objects are sorted by id and keys by name, so two boards with the
+        same content give the same string whatever the insertion order.
+        client/board_model.py computes it the same way; when two clients
+        and the server are at the same seq the three values must be equal.
+        """
+        return objects_checksum(self.objects)
+
     # ------------------------------------------------------------------ delta
     def delta(self, from_seq):
         """Log entries with seq > from_seq, or None if the client has to take a
@@ -247,6 +258,18 @@ class BoardState:
         if from_seq < first - 1:
             return None
         return copy.deepcopy(self.log[from_seq - (first - 1):])
+
+
+def objects_checksum(objects):
+    """sha1 hex of the sorted JSON of a dict obj_id -> object (see BoardState.checksum).
+
+    The client keeps an identical copy of this function in
+    client/board_model.py (the client must not import server code);
+    p3_test_board_model.py checks that the two agree.
+    """
+    blob = json.dumps(sorted(objects.values(), key=lambda o: o['id']),
+                      sort_keys=True, separators=(',', ':'))
+    return hashlib.sha1(blob.encode('utf-8')).hexdigest()
 
 
 def decode_snapshot(payload):
