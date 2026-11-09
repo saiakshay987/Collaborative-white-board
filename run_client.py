@@ -2,10 +2,8 @@
 """run_client.py: Entry point: starts the whiteboard client.
 
 Imports client.bootstrap (every module registers itself), creates the
-shared AppState, the BoardModel and the MainWindow, and shows the window.
-
-Skeleton: the connect dialog is a placeholder; NetClient and the real
-ConnectDialog arrive in the next P1 task.
+shared AppState, the NetClient and the BoardModel, shows the connect dialog
+(host or join a room) and then the main window.
 """
 
 import sys
@@ -15,33 +13,43 @@ from PyQt5.QtWidgets import QApplication
 import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
 from client.board_model import BoardModel
+from client.connect_dialog import ConnectDialog
 from client.main_window import MainWindow
+from client.net_client import NetClient
 
 
-def ask_connection(app):
-    """Placeholder for the connect dialog (host, port, username, room, password).
-
-    Returns None for now: the client starts offline.
-    """
-    app.toast("Offline: connect dialog not implemented yet")
-    return None
+def wire_status(app, window):
+    """Show connection events as toasts and the room code in the title bar."""
+    app.net.reconnecting.connect(lambda: app.toast("Connection lost, reconnecting..."))
+    app.net.reconnected.connect(lambda: app.toast("Reconnected, catching up..."))
+    app.net.disconnected.connect(lambda reason: app.toast("Disconnected: " + reason))
+    window.setWindowTitle("LAN Whiteboard - room %s - %s" % (app.me.room, app.me.username))
 
 
 def main():
-    """Build the app state and main window, then run the Qt event loop."""
+    """Create state, run the connect dialog, then the main window and event loop."""
     qapp = QApplication(sys.argv)
     qapp.setApplicationName("LAN Whiteboard")
 
     app = AppState()
-    app.me.username = "me"
+    app.net = NetClient(app)
     app.board = BoardModel()
+
+    # Board messages (SNAPSHOT, CHAT_HISTORY, ...) may arrive while the
+    # dialog is still open; the handlers store them in app.board etc., so
+    # the window built afterwards shows them.
+    if ConnectDialog(app).exec_() != ConnectDialog.Accepted:
+        app.net.disconnect()
+        return 0
+
     window = MainWindow(app)
     app.window = window
+    wire_status(app, window)
     window.show()
-
-    ask_connection(app)
-    sys.exit(qapp.exec_())
+    code = qapp.exec_()
+    app.net.disconnect()
+    return code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
