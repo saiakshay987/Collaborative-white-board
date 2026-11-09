@@ -27,7 +27,7 @@ import time
 import traceback
 from collections import OrderedDict
 
-from common import config
+from common import config, protocol
 
 # Room codes: 6 characters from A-Z and 2-9 without the look-alikes 0, O, 1, I
 # (contract section B), so a code read aloud in the lab is unambiguous.
@@ -37,6 +37,69 @@ CODE_LENGTH = 6
 ROLE_HOST = "host"
 ROLE_EDITOR = "editor"
 ROLE_VIEWER = "viewer"
+
+# Server-side sanity limit for usernames (they appear in every envelope and
+# in obj_ids "<user>-<n>", so keep them short).
+MAX_USERNAME = 24
+
+# USER_LEFT reasons (contract C1).
+REASON_LEAVE = "leave"
+REASON_TIMEOUT = "timeout"
+REASON_KICKED = "kicked"
+
+
+class JoinError(Exception):
+    """A CREATE_ROOM / JOIN_ROOM request was refused.
+
+    code is one of the contract ERROR codes (NO_ROOM, BAD_PASSWORD,
+    NAME_TAKEN, BAD_FORMAT); text is a human-readable explanation. The
+    presence handler turns it into ERROR {code, text, ref_type}.
+    """
+
+    def __init__(self, code, text):
+        """Store the error code and text."""
+        super().__init__(text)
+        self.code = code
+        self.text = text
+
+
+def clean_username(value):
+    """Validate a client-supplied username and return it stripped.
+
+    Never trust the client: it must be a non-empty string of at most
+    MAX_USERNAME printable characters. Raises JoinError(BAD_FORMAT).
+    """
+    if not isinstance(value, str):
+        raise JoinError(protocol.BAD_FORMAT, "username must be a string")
+    name = value.strip()
+    if not name or len(name) > MAX_USERNAME or not name.isprintable():
+        raise JoinError(protocol.BAD_FORMAT,
+                        "username must be 1-%d printable characters" % MAX_USERNAME)
+    return name
+
+
+def clean_password(value):
+    """Return the optional password as a str, or None when absent/empty.
+
+    Raises JoinError(BAD_FORMAT) for a non-string password.
+    """
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise JoinError(protocol.BAD_FORMAT, "password must be a string")
+    return value
+
+
+def clean_code(value):
+    """Normalise a client-supplied room code (strip, upper-case).
+
+    Raises JoinError(NO_ROOM) if it cannot be a valid code at all, so the
+    caller does not even need to look it up.
+    """
+    code = value.strip().upper() if isinstance(value, str) else ""
+    if len(code) != CODE_LENGTH or any(ch not in CODE_ALPHABET for ch in code):
+        raise JoinError(protocol.NO_ROOM, "no room with code %r" % (value,))
+    return code
 
 # --- Hook registries ---------------------------------------------------------
 
@@ -104,6 +167,8 @@ class Member:
         self.session = session
         self.online = session is not None
         self.offline_since = None if self.online else time.time()
+        # Why the member last left (REASON_*); read by the USER_LEFT hook.
+        self.left_reason = None
 
     def public(self):
         """Return the member as it appears in USER_LIST (no token!)."""
@@ -227,13 +292,64 @@ class RoomManager:
     def add_member(self, room, name, role, session):
         """Create a new online Member in room and return it.
 
-        The caller (presence) has already checked name and password and
-        holds room.lock.
+        The caller (join) has already checked name and password.
         """
         with room.lock:
             member = Member(name, role, room.next_color(), session)
             room.members[name] = member
             return member
+
+    def purge_expired(self, room):
+        """Drop offline seats whose rejoin window (config.REJOIN_WINDOW_S) is over.
+
+        Their on_member_left hooks already ran when they went offline, so
+        the seat is simply removed; the name becomes free again.
+        """
+        now = time.time()
+        with room.lock:
+            for name, m in list(room.members.items()):
+                if not m.online and m.offline_since is not None \
+                        and now - m.offline_since > config.REJOIN_WINDOW_S:
+                    del room.members[name]
+
+    def join(self, room, name, session, password=None, token=None):
+        """Seat `session` in room as `name`; return (member, rejoin).
+
+        Decision order, all under room.lock so two clients racing for the
+        same name cannot both win:
+          1. A seat with this name exists and the token matches it: this is
+             a reconnect (contract E4). Resume the seat (same role, color,
+             token); any stale connection still attached to it is closed.
+          2. Wrong or missing password: JoinError BAD_PASSWORD.
+          3. A seat with this name exists (online, or offline inside the
+             rejoin window without the right token): JoinError NAME_TAKEN.
+          4. Otherwise a new seat: host if the room has nobody in it (the
+             creator), else editor. Color is the next one in join order.
+        """
+        with room.lock:
+            self.purge_expired(room)
+            existing = room.members.get(name)
+
+            # 1. Reconnect with token. compare_digest avoids timing leaks.
+            if existing is not None and isinstance(token, str) \
+                    and secrets.compare_digest(existing.token, token):
+                old = existing.session
+                self.resume_member(room, existing, session)
+                if old is not None and old is not session:
+                    old.close()  # its reader thread sees member.session changed: no USER_LEFT
+                return existing, True
+
+            # 2. Password (a valid token above already proved membership).
+            if not room.check_password(password):
+                raise JoinError(protocol.BAD_PASSWORD, "wrong room password")
+
+            # 3. Name must be unique within the room.
+            if existing is not None:
+                raise JoinError(protocol.NAME_TAKEN, "the name %r is already in this room" % name)
+
+            # 4. New seat.
+            role = ROLE_HOST if not room.members else ROLE_EDITOR
+            return self.add_member(room, name, role, session), False
 
     def resume_member(self, room, member, session):
         """Attach a new connection to an existing (offline) member seat."""
@@ -248,13 +364,16 @@ class RoomManager:
         with room.lock:
             _run_hooks(_member_joined_hooks, room, member, rejoin, last_seq)
 
-    def member_left(self, room, member, remove=False):
+    def member_left(self, room, member, remove=False, reason=REASON_TIMEOUT):
         """Mark member offline (or remove it) and run on_member_left hooks.
 
-        remove=True deletes the seat (clean LEAVE, kick, rejoin window over);
-        otherwise the seat is kept for config.REJOIN_WINDOW_S.
+        remove=True deletes the seat (clean LEAVE, kick); otherwise the seat
+        is kept for config.REJOIN_WINDOW_S. reason (REASON_*) is stored on
+        member.left_reason so hooks (presence's USER_LEFT) can report it
+        without changing the contract's hook signature fn(room, member).
         """
         with room.lock:
+            member.left_reason = reason
             member.session = None
             if member.online:
                 member.online = False
