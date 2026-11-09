@@ -32,8 +32,9 @@ from common import protocol
 _HANDLERS = {}
 
 # Messages a client may send before it is a member of a room. Everything
-# else needs a room first (a client cannot chat or draw "nowhere").
-_PRE_JOIN_TYPES = frozenset([protocol.CREATE_ROOM, protocol.JOIN_ROOM])
+# else needs a room first (a client cannot chat or draw "nowhere"). PONG is
+# allowed because the heartbeat PINGs every connection, joined or not.
+_PRE_JOIN_TYPES = frozenset([protocol.CREATE_ROOM, protocol.JOIN_ROOM, protocol.PONG])
 
 
 def handler(msg_type):

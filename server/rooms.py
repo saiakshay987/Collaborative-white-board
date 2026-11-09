@@ -47,6 +47,15 @@ REASON_LEAVE = "leave"
 REASON_TIMEOUT = "timeout"
 REASON_KICKED = "kicked"
 
+# A room with no online member for this long (seconds) is deleted from
+# memory by RoomManager.sweep (run by the heartbeat thread). Server-side
+# housekeeping only, not part of the protocol, so it lives here and not in
+# common/config.py. It is much longer than config.REJOIN_WINDOW_S, so every
+# offline seat has expired before its room goes away. Nothing on disk is
+# touched: the autosave file (contract E7, P3) stays and is written every
+# 10 s, so the last state of the room was saved long before it is deleted.
+ROOM_EMPTY_TTL_S = 10 * 60
+
 
 class JoinError(Exception):
     """A CREATE_ROOM / JOIN_ROOM request was refused.
@@ -189,6 +198,12 @@ class Room:
         self.board = None   # attached by P3 (server/board_state.py)
         self.chat = None    # attached by P4 (server/chat.py)
         self.assets = None  # attached by P3 (server/assets.py)
+        # Time the last online member went offline (None while someone is
+        # online); maintained by RoomManager.sweep.
+        self.empty_since = None
+        # Set (under room.lock) when the room is deleted, so a JOIN_ROOM
+        # that looked the room up just before cannot seat itself in it.
+        self.closed = False
         self._color_index = 0
         self._salt = secrets.token_bytes(16)
         self._pw_hash = self._hash(password) if password else None
@@ -312,6 +327,38 @@ class RoomManager:
                         and now - m.offline_since > config.REJOIN_WINDOW_S:
                     del room.members[name]
 
+    def sweep(self, now=None):
+        """Housekeeping, called every tick by the heartbeat thread (presence.py).
+
+        For every room: drop offline seats whose rejoin window is over,
+        track since when the room has had no online member, and delete it
+        from memory after ROOM_EMPTY_TTL_S. Returns the deleted codes.
+
+        Lock order is always manager.lock, then room.lock (join() never
+        takes manager.lock while holding room.lock), so this cannot
+        deadlock. The final check and the delete happen under BOTH locks:
+        a member that joins at the last moment keeps the room alive, and
+        room.closed stops a join that already holds a reference to it.
+        """
+        now = time.time() if now is None else now
+        deleted = []
+        with self.lock:
+            for code, room in list(self.rooms.items()):
+                with room.lock:
+                    self.purge_expired(room)
+                    if room.online_members():
+                        room.empty_since = None
+                        continue
+                    if room.empty_since is None:
+                        room.empty_since = now
+                    elif now - room.empty_since >= ROOM_EMPTY_TTL_S:
+                        room.closed = True
+                        del self.rooms[code]
+                        deleted.append(code)
+        for code in deleted:
+            print("[server] room %s deleted (empty for %d min)" % (code, ROOM_EMPTY_TTL_S // 60))
+        return deleted
+
     def join(self, room, name, session, password=None, token=None):
         """Seat `session` in room as `name`; return (member, rejoin).
 
@@ -327,6 +374,9 @@ class RoomManager:
              creator), else editor. Color is the next one in join order.
         """
         with room.lock:
+            # 0. Deleted by sweep() between manager.get() and now.
+            if room.closed:
+                raise JoinError(protocol.NO_ROOM, "room %s no longer exists" % room.code)
             self.purge_expired(room)
             existing = room.members.get(name)
 

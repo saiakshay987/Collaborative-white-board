@@ -206,9 +206,14 @@ class NetClient(QObject):
     def _open_socket(host, port):
         """Connect a TCP socket (blocking, with a timeout); raises OSError."""
         sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT_S)
-        # Back to blocking mode: the receiver thread waits in recv() for as
-        # long as the server is quiet. Liveness is the server's PING's job.
-        sock.settimeout(None)
+        # Dead-server detection (contract E5, seen from the client): the
+        # server PINGs every config.HEARTBEAT_S, so a healthy link delivers
+        # a frame at least every 5 s. If recv() waits config.TIMEOUT_S with
+        # nothing, the link is dead (e.g. Wi-Fi off: no FIN/RST ever comes)
+        # and socket.timeout ends the receiver thread, which starts the
+        # reconnect below. It also stops a send to a dead link from
+        # blocking the sender thread forever.
+        sock.settimeout(config.TIMEOUT_S)
         # Strokes are sent as many small frames; disable Nagle so they are not
         # held back waiting for ACKs (lower latency for live drawing).
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -233,6 +238,8 @@ class NetClient(QObject):
                 self._frame.emit(link.gen, msg)
         except framing.ProtocolError as exc:
             reason = "Protocol error: %s" % exc
+        except socket.timeout:
+            reason = "No message from the server for %d s." % config.TIMEOUT_S
         except OSError as exc:
             reason = "Connection lost: %s" % exc
         link.close()
