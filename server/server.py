@@ -32,6 +32,7 @@ import socket
 import threading
 import time
 import traceback
+from collections import deque
 
 from common import config, framing, protocol
 from server import dispatcher, presence, rooms
@@ -59,8 +60,8 @@ class ClientHandler(threading.Thread):
     This is the `session` object handed to every handler. Attributes:
     member (rooms.Member or None), room (rooms.Room or None), addr (peer
     (ip, port)), last_rx (time of the last received frame, for the
-    heartbeat), rtt_ms (last PING round-trip time, None until the first
-    PONG). Methods: send, send_error, close, run.
+    heartbeat), rtt_ms (moving average of the last PING round-trip times,
+    None until the first PONG). Methods: send, send_error, close, run.
     """
 
     def __init__(self, sock, addr, server=None):
@@ -76,7 +77,12 @@ class ClientHandler(threading.Thread):
         # Last-seen time: updated for EVERY received frame, read by the
         # heartbeat thread (presence.Heartbeat) to detect silent clients.
         self.last_rx = time.time()
-        self.rtt_ms = None  # set by the PONG handler (presence.on_pong)
+        # RTT: the last presence.RTT_AVG_N PING round-trip times (ms) and
+        # their moving average. Written by presence.on_pong on this reader
+        # thread, read by the heartbeat thread for STATS (a float
+        # assignment is atomic in CPython, so no lock is needed).
+        self.rtt_samples = deque(maxlen=presence.RTT_AVG_N)
+        self.rtt_ms = None  # moving average, None until the first PONG
 
     def __repr__(self):
         """Short description for log lines."""

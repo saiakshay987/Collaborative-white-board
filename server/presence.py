@@ -19,8 +19,9 @@ Leaving: a LEAVE message removes the seat (reason "leave"). A dropped TCP
 connection only marks the seat offline (reason "timeout") so the user can
 resume it with the token within config.REJOIN_WINDOW_S.
 
-Heartbeat and liveness (contract C1, E4, E5) live here too, see below.
-STATS, CURSOR and KICK come in a later P1 task.
+Heartbeat and liveness (contract C1, E4, E5) live here too, see below,
+and so does the STATS broadcast (latency and traffic, every 2 s).
+CURSOR and KICK come in a later P1 task.
 """
 
 # =============================================================================
@@ -66,7 +67,7 @@ import threading
 import time
 import traceback
 
-from common import config, protocol
+from common import config, framing, protocol
 from server import rooms
 from server.dispatcher import handler
 
@@ -74,6 +75,15 @@ from server.dispatcher import handler
 # timed-out clients; a PING goes out every config.HEARTBEAT_S. A 1 s tick
 # means a dead client is noticed between TIMEOUT_S and TIMEOUT_S + 1 s.
 TICK_S = 1.0
+
+# STATS goes to every room this often (seconds, contract C1: "Every 2 s").
+STATS_EVERY_S = 2.0
+
+# The RTT reported for a client is the moving average of its last
+# RTT_AVG_N PING/PONG round trips. One sample alone jumps around (a single
+# Wi-Fi retransmission can double it); averaging 5 smooths that out while
+# still following a real change within 5 pings (25 s).
+RTT_AVG_N = 5
 
 
 # --- USER_LIST ---------------------------------------------------------------
@@ -230,13 +240,53 @@ def on_pong(session, msg):
     round-trip time. t is our own clock, so no clock sync is needed. A
     missing or forged t is ignored (never trust the client): it must be a
     number from the past, not older than the timeout.
+
+    The sample goes into session.rtt_samples (a deque that keeps only the
+    last RTT_AVG_N), and session.rtt_ms becomes their average.
     """
     t = msg["payload"].get("t")
     if isinstance(t, bool) or not isinstance(t, (int, float)):
         return
     rtt = time.time() - t
     if 0 <= rtt <= config.TIMEOUT_S:
-        session.rtt_ms = round(rtt * 1000.0, 1)
+        samples = session.rtt_samples
+        samples.append(rtt * 1000.0)
+        session.rtt_ms = round(sum(samples) / len(samples), 1)
+
+
+# --- STATS -------------------------------------------------------------------
+
+def stats_payload(room, counters, n_clients):
+    """Return the STATS payload for room (contract C1).
+
+    {rtt: {name: ms}, server: {clients, msgs_in, msgs_out, bytes_in, bytes_out}}
+
+    rtt holds the averaged RTT of every ONLINE member that has answered at
+    least one PING (a member who just joined appears after its first PONG).
+    counters is a framing.stats_snapshot() of the whole server process and
+    n_clients the number of open connections, the same for every room.
+    """
+    with room.lock:
+        rtt = {m.name: m.session.rtt_ms for m in room.online_members()
+               if m.session.rtt_ms is not None}
+    server = dict(counters)
+    server["clients"] = n_clients
+    return {"rtt": rtt, "server": server}
+
+
+def broadcast_stats(n_clients):
+    """Send STATS to every room that has someone online.
+
+    The counters are read once, so all rooms see the same numbers. The
+    STATS frames sent here are counted in the NEXT round's counters
+    (framing counts a frame after sending it).
+    """
+    counters = framing.stats_snapshot()
+    with rooms.manager.lock:  # copy only; never hold manager.lock while sending
+        room_list = list(rooms.manager.rooms.values())
+    for room in room_list:
+        if room.online_members():
+            room.broadcast(protocol.STATS, stats_payload(room, counters, n_clients))
 
 
 # --- Heartbeat thread --------------------------------------------------------
@@ -249,7 +299,9 @@ class Heartbeat(threading.Thread):
          (its reader thread then marks the member offline and sends
          USER_LEFT reason "timeout", see server.ClientHandler._release_seat),
       2. every config.HEARTBEAT_S sends PING {t} to every connection,
-      3. lets rooms.manager drop expired offline seats and delete rooms
+      3. every STATS_EVERY_S sends STATS (RTT per user + traffic
+         counters) to every room,
+      4. lets rooms.manager drop expired offline seats and delete rooms
          that have been empty for rooms.ROOM_EMPTY_TTL_S.
     Timeouts are checked BEFORE pinging, so a PING to a dead socket can
     never delay the detection of other dead clients.
@@ -260,6 +312,7 @@ class Heartbeat(threading.Thread):
         super().__init__(name="heartbeat", daemon=True)
         self.server = server
         self._next_ping = 0.0
+        self._next_stats = 0.0
 
     def run(self):
         """Loop until the server stops; one failing tick never kills the thread."""
@@ -290,7 +343,12 @@ class Heartbeat(threading.Thread):
                 if not c.closed:
                     c.send(protocol.PING, {"t": now})
 
-        # 3. Housekeeping: expired seats and long-empty rooms.
+        # 3. STATS every STATS_EVERY_S (latency and traffic panel).
+        if now >= self._next_stats:
+            self._next_stats = now + STATS_EVERY_S
+            broadcast_stats(sum(1 for c in clients if not c.closed))
+
+        # 4. Housekeeping: expired seats and long-empty rooms.
         rooms.manager.sweep(now)
 
 
