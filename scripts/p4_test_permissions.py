@@ -1,5 +1,5 @@
 # OWNER: P4
-"""p4_test_permissions.py: unit tests for permissions.can, ChatLog and the SET_ROLE handler.
+"""p4_test_permissions.py: unit tests for permissions.can, ChatLog, SET_ROLE, CHAT and the chat hooks.
 
 Run from the project root with either
     python scripts/p4_test_permissions.py
@@ -162,12 +162,24 @@ class FakeMember:
 
 
 class FakeRoom:
-    """Stand-in for rooms.Room: members dict and an RLock."""
+    """Stand-in for rooms.Room: members dict, an RLock, and recorded sends."""
 
     def __init__(self, *members):
         """Create a room holding the given FakeMembers."""
         self.members = {m.name: m for m in members}
         self.lock = threading.RLock()
+        self.chat = None
+        self.broadcasts = []  # (type, payload, kwargs)
+        self.direct = []      # (name, type, payload)
+
+    def broadcast(self, type, payload, exclude=None, **env):
+        """Record a broadcast (exclude is kept so tests can assert it is unused)."""
+        self.broadcasts.append((type, payload, dict(exclude=exclude, **env)))
+
+    def send_to(self, name, type, payload, **env):
+        """Record a message sent to one member."""
+        self.direct.append((name, type, payload))
+        return True
 
 
 class FakeSession:
@@ -264,6 +276,119 @@ class SetRoleTest(unittest.TestCase):
         self.assertEqual(self.send(self.bob, "bob", "viewer").errors,
                          [(protocol.FORBIDDEN, "SET_ROLE")])
         self.assertEqual(self.bob.role, "host")
+
+
+# --- CHAT handler and room hooks ----------------------------------------------
+
+class ChatHandlerTest(unittest.TestCase):
+    """Checks on_chat (role, validation, broadcast) and the two room hooks."""
+
+    def setUp(self):
+        """Room with host alice, editor bob, viewer carol and a real ChatLog."""
+        self.alice = FakeMember("alice", "host")
+        self.bob = FakeMember("bob", "editor")
+        self.carol = FakeMember("carol", "viewer")
+        self.room = FakeRoom(self.alice, self.bob, self.carol)
+        chat.attach_chat(self.room)
+
+    def send(self, sender, payload):
+        """Run on_chat as `sender` with `payload`; return the fake session."""
+        session = FakeSession(sender, self.room)
+        chat.on_chat(session, {"type": "CHAT", "payload": payload})
+        return session
+
+    def test_handler_is_registered(self):
+        """CHAT has a handler; DM still has none (later task)."""
+        from server import dispatcher
+        self.assertIn("CHAT", dispatcher.registered_types())
+        self.assertNotIn("DM", dispatcher.registered_types())
+
+    def test_room_gets_a_chatlog(self):
+        """The on_room_created hook attaches a ChatLog."""
+        self.assertIsInstance(self.room.chat, chat.ChatLog)
+
+    def test_every_role_may_chat_and_sender_gets_the_echo(self):
+        """Host, editor and viewer can chat; broadcast has no `exclude` (sender included)."""
+        for sender in (self.alice, self.bob, self.carol):
+            with self.subTest(sender=sender.name):
+                self.room.broadcasts.clear()
+                session = self.send(sender, {"text": "hello"})
+                self.assertEqual(session.errors, [])
+                self.assertEqual(len(self.room.broadcasts), 1)
+                mtype, payload, env = self.room.broadcasts[0]
+                self.assertEqual(mtype, "CHAT")
+                self.assertEqual(set(payload), {"msg_id", "from", "text", "ts"})
+                self.assertEqual(payload["from"], sender.name)
+                self.assertEqual(payload["text"], "hello")
+                self.assertIsNone(env["exclude"])
+
+    def test_sender_name_is_not_taken_from_payload(self):
+        """A forged `from` in the payload is ignored."""
+        self.send(self.carol, {"text": "hi", "from": "alice", "msg_id": "evil"})
+        payload = self.room.broadcasts[0][1]
+        self.assertEqual(payload["from"], "carol")
+        self.assertNotEqual(payload["msg_id"], "evil")
+
+    def test_forbidden_role_is_rejected(self):
+        """A role without the chat action gets FORBIDDEN and nothing is sent."""
+        outsider = FakeMember("eve", "guest")
+        session = self.send(outsider, {"text": "hi"})
+        self.assertEqual(session.errors, [(protocol.FORBIDDEN, "CHAT")])
+        self.assertEqual(self.room.broadcasts, [])
+
+    def test_empty_or_bad_text_is_rejected(self):
+        """Missing, empty, whitespace-only or non-string text gives BAD_FORMAT."""
+        for payload in ({}, {"text": ""}, {"text": "   \n\t "}, {"text": None},
+                        {"text": 42}, {"text": ["hi"]}):
+            with self.subTest(payload=payload):
+                session = self.send(self.bob, payload)
+                self.assertEqual(session.errors, [(protocol.BAD_FORMAT, "CHAT")])
+        self.assertEqual(self.room.broadcasts, [])
+        self.assertEqual(self.room.chat.history_for("bob"), [])
+
+    def test_text_is_stripped(self):
+        """Leading and trailing whitespace is removed."""
+        self.send(self.bob, {"text": "  hi there \n"})
+        self.assertEqual(self.room.broadcasts[0][1]["text"], "hi there")
+
+    def test_text_is_cut_to_1000_chars(self):
+        """1001 characters are cut to 1000; exactly 1000 is untouched."""
+        self.send(self.bob, {"text": "x" * 1001})
+        self.assertEqual(len(self.room.broadcasts[0][1]["text"]), 1000)
+        self.send(self.bob, {"text": "y" * 1000})
+        self.assertEqual(self.room.broadcasts[1][1]["text"], "y" * 1000)
+
+    def test_message_is_stored_in_the_log(self):
+        """The broadcast message is the one stored in room.chat."""
+        self.send(self.carol, {"text": "stored"})
+        stored = self.room.chat.history_for("alice")
+        self.assertEqual([m["text"] for m in stored], ["stored"])
+        self.assertEqual(stored[0]["msg_id"], self.room.broadcasts[0][1]["msg_id"])
+
+    def test_history_is_sent_on_join(self):
+        """A joining member gets CHAT_HISTORY with its own view of the log."""
+        self.send(self.alice, {"text": "before you came"})
+        self.room.chat.add_dm("alice", "bob", "for bob only")
+        dave = FakeMember("dave", "editor")
+        chat.send_chat_history(self.room, dave, False, None)
+        self.assertEqual(len(self.room.direct), 1)
+        name, mtype, payload = self.room.direct[0]
+        self.assertEqual((name, mtype), ("dave", "CHAT_HISTORY"))
+        self.assertEqual([m["text"] for m in payload["messages"]], ["before you came"])
+
+    def test_history_is_sent_again_on_rejoin_with_own_dms(self):
+        """A rejoin also gets the history, including the user's own DMs."""
+        self.send(self.alice, {"text": "hello"})
+        self.room.chat.add_dm("alice", "bob", "for bob only")
+        chat.send_chat_history(self.room, self.bob, True, 7)
+        name, mtype, payload = self.room.direct[0]
+        self.assertEqual((name, mtype), ("bob", "CHAT_HISTORY"))
+        self.assertEqual([m["text"] for m in payload["messages"]], ["hello", "for bob only"])
+
+    def test_history_of_empty_room_is_empty_list(self):
+        """CHAT_HISTORY is still sent when there are no messages."""
+        chat.send_chat_history(self.room, self.bob, False, None)
+        self.assertEqual(self.room.direct[0][2], {"messages": []})
 
 
 if __name__ == "__main__":
