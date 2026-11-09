@@ -8,7 +8,7 @@ shared AppState, the NetClient and the BoardModel, shows the connect dialog
 
 import sys
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 
 import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
@@ -18,8 +18,41 @@ from client.main_window import MainWindow
 from client.net_client import NetClient
 
 
+class ConnectionStatus(QLabel):
+    """Permanent status-bar label: Connected, Reconnecting... or Disconnected.
+
+    Driven only by NetClient's Qt signals (contract F), which are emitted on
+    the GUI thread, so updating the label here is thread-safe. It is a
+    permanent widget, so the short toasts shown with showMessage() do not
+    hide it.
+    """
+
+    # state -> (text, colour)
+    STATES = {
+        "connected": ("Connected", "#2e7d32"),
+        "reconnecting": ("Reconnecting...", "#e67e22"),
+        "disconnected": ("Disconnected", "#c0392b"),
+    }
+
+    def __init__(self, net, parent=None):
+        """Start as Connected (the window opens only after JOIN_OK) and follow net."""
+        super().__init__(parent)
+        self.set_state("connected")
+        net.connected.connect(lambda: self.set_state("connected"))
+        net.reconnected.connect(lambda: self.set_state("connected"))
+        net.reconnecting.connect(lambda: self.set_state("reconnecting"))
+        net.disconnected.connect(lambda _reason: self.set_state("disconnected"))
+
+    def set_state(self, state):
+        """Show one of STATES."""
+        text, colour = self.STATES[state]
+        self.setText(text)
+        self.setStyleSheet("color: %s; font-weight: bold; padding: 0 6px;" % colour)
+
+
 def wire_status(app, window):
-    """Show connection events as toasts and the room code in the title bar."""
+    """Show the connection state in the status bar, events as toasts, room in the title."""
+    window.statusBar().addPermanentWidget(ConnectionStatus(app.net, window))
     app.net.reconnecting.connect(lambda: app.toast("Connection lost, reconnecting..."))
     app.net.reconnected.connect(lambda: app.toast("Reconnected, catching up..."))
     app.net.disconnected.connect(lambda reason: app.toast("Disconnected: " + reason))

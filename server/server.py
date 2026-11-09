@@ -34,12 +34,23 @@ import time
 import traceback
 
 from common import config, framing, protocol
-from server import dispatcher, rooms
+from server import dispatcher, presence, rooms
 
 # How often (seconds) the accept loop wakes up from accept() to check whether
 # the server is stopping. Without a timeout, a blocked accept() on Windows
 # does not see Ctrl+C until the next client connects.
 ACCEPT_POLL_S = 1.0
+
+# Socket timeout for client connections (seconds): a backstop BEHIND the
+# heartbeat. If the Wi-Fi of a client disappears, no FIN/RST ever arrives;
+# once the kernel's send buffer for that socket is full, sendall() would
+# block forever, and a broadcast holds room.lock while sending, which would
+# freeze the whole room. With a timeout, a blocked send or recv raises
+# socket.timeout (an OSError) and the connection is closed. It is longer
+# than config.TIMEOUT_S so that, normally, the heartbeat (presence.py)
+# notices a dead client first; a live client sends at least a PONG every
+# config.HEARTBEAT_S, so recv() never waits this long on a healthy link.
+SOCKET_TIMEOUT_S = config.TIMEOUT_S + config.HEARTBEAT_S
 
 
 class ClientHandler(threading.Thread):
@@ -48,7 +59,8 @@ class ClientHandler(threading.Thread):
     This is the `session` object handed to every handler. Attributes:
     member (rooms.Member or None), room (rooms.Room or None), addr (peer
     (ip, port)), last_rx (time of the last received frame, for the
-    heartbeat). Methods: send, send_error, close, run.
+    heartbeat), rtt_ms (last PING round-trip time, None until the first
+    PONG). Methods: send, send_error, close, run.
     """
 
     def __init__(self, sock, addr, server=None):
@@ -61,7 +73,10 @@ class ClientHandler(threading.Thread):
         self.room = None
         self.closed = False
         self._close_lock = threading.Lock()
+        # Last-seen time: updated for EVERY received frame, read by the
+        # heartbeat thread (presence.Heartbeat) to detect silent clients.
         self.last_rx = time.time()
+        self.rtt_ms = None  # set by the PONG handler (presence.on_pong)
 
     def __repr__(self):
         """Short description for log lines."""
@@ -128,8 +143,10 @@ class ClientHandler(threading.Thread):
                 dispatcher.dispatch(self, msg)
         except framing.ProtocolError as exc:
             print("[server] %r protocol error: %s" % (self, exc))
+        except socket.timeout:
+            print("[server] %r: socket timed out" % (self,))
         except OSError:
-            pass  # connection reset, or closed by us / by shutdown
+            pass  # connection reset, or closed by us / heartbeat / shutdown
         except Exception:  # noqa: BLE001 - never let one client kill the server
             traceback.print_exc()
         finally:
@@ -186,6 +203,9 @@ class Server:
         self.sock.listen(32)  # backlog: connections waiting for accept()
         self.sock.settimeout(ACCEPT_POLL_S)
         self.running = True
+        # Liveness: PING every HEARTBEAT_S, time out silent clients, delete
+        # long-empty rooms (contract C1, E5).
+        presence.start_heartbeat(self)
 
     def serve_forever(self):
         """Accept clients until stop(); each gets its own ClientHandler thread.
@@ -201,7 +221,8 @@ class Server:
             except OSError:
                 break  # listening socket closed by stop()
             try:
-                conn.settimeout(None)  # client sockets are fully blocking
+                # Blocking, but never forever (see SOCKET_TIMEOUT_S).
+                conn.settimeout(SOCKET_TIMEOUT_S)
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 client = ClientHandler(conn, addr, self)
                 with self._clients_lock:
@@ -216,6 +237,11 @@ class Server:
         """Remove a finished ClientHandler from the live set."""
         with self._clients_lock:
             self.clients.discard(client)
+
+    def client_list(self):
+        """Return a copy of the live ClientHandlers (safe to iterate in another thread)."""
+        with self._clients_lock:
+            return list(self.clients)
 
     def stop(self):
         """Clean shutdown: stop accepting, close every client, wait briefly.
