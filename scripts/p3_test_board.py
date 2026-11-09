@@ -830,6 +830,47 @@ class SyncTests(unittest.TestCase):
             self.assertEqual(s.of_type('SYNC_DELTA'), [], name)
         self.assertEqual(len(self.join('b5', True, 20).of_type('SYNC_DELTA')), 1)    # gap exactly 500
 
+    def ask(self, session, last_seq):
+        """Dispatch SYNC_REQUEST {last_seq} from session and return its new messages."""
+        session.sent.clear()
+        payload = {} if last_seq is ... else {'last_seq': last_seq}
+        dispatcher.dispatch(session, {'type': 'SYNC_REQUEST', 'payload': payload})
+        return session.sent
+
+    def test_sync_request_small_gap_gets_delta_to_the_sender_only(self):
+        self.draw(10)
+        bob = self.join('bob', False, None)
+        self.alice.sent.clear()
+        [(type_, payload, _)] = self.ask(bob, 6)
+        self.assertEqual((type_, payload['from_seq'], payload['to_seq']), ('SYNC_DELTA', 6, 10))
+        self.assertEqual([e['seq'] for e in payload['ops']], [7, 8, 9, 10])
+        self.assertEqual(self.alice.sent, [])
+
+    def test_sync_request_big_gap_or_nonsense_gets_snapshot(self):
+        self.draw(MAX_DELTA + 20)
+        bob = self.join('bob', False, None)
+        for last_seq in (5, ..., None, 'x', -1, 10 ** 9, True):
+            [(type_, payload, _)] = self.ask(bob, last_seq)
+            self.assertEqual((type_, payload['seq']), ('SNAPSHOT', MAX_DELTA + 20), repr(last_seq))
+        [(type_, _, _)] = self.ask(bob, 30)                       # gap exactly 490: still a delta
+        self.assertEqual(type_, 'SYNC_DELTA')
+
+    def test_viewer_may_sync_and_up_to_date_gets_empty_delta(self):
+        self.draw(3)
+        viewer = FakeSession(self.room, 'view', 'viewer')
+        [(type_, payload, _)] = self.ask(viewer, 3)
+        self.assertEqual((type_, payload['ops']), ('SYNC_DELTA', []))
+
+    def test_checksum_matches_between_server_board_and_a_synced_copy(self):
+        self.draw(8)
+        copy_ = BoardState()
+        copy_.load_snapshot(self.room.board.snapshot_payload())
+        self.assertEqual(copy_.checksum(), self.room.board.checksum())
+        self.assertEqual(len(self.room.board.checksum()), 40)
+        self.assertEqual(BoardState().checksum(), board_state.objects_checksum({}))
+        self.draw(1)
+        self.assertNotEqual(copy_.checksum(), self.room.board.checksum())
+
     def test_delta_ops_replay_to_the_same_board(self):
         self.draw(2)
         base = self.room.board.snapshot_payload()
