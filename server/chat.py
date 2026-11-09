@@ -1,10 +1,13 @@
 # OWNER: P4
 """chat.py: Room chat and direct messages, CHAT_HISTORY on join, SET_ROLE handler.
 
-Contract section C4. This file currently holds:
-  * ChatLog   - the per-room message store (no handlers use it yet),
+Contract sections C4 and E. This file holds:
+  * ChatLog   - the per-room message store,
+  * hooks     - room.chat = ChatLog() on room creation, CHAT_HISTORY on every
+                (re)join,
+  * CHAT      - the room-wide chat handler,
   * SET_ROLE  - the host-only role change handler.
-The CHAT / DM handlers and the room hooks come in a later task.
+The DM handler comes in a later task.
 """
 
 import threading
@@ -13,7 +16,11 @@ import time
 from common import protocol
 from server import permissions
 from server import presence
+from server import rooms
 from server.dispatcher import handler
+
+# Longest chat text the server accepts (contract C4); longer text is cut.
+MAX_CHAT_CHARS = 1000
 
 # Roles a member can have (contract C4). Kept local so this module only
 # depends on the dispatcher/presence APIs of P1, not on rooms internals.
@@ -132,3 +139,66 @@ def on_set_role(session, msg):
         return
     # Tell everyone (the target included) about the new role.
     presence.broadcast_user_list(room)
+
+
+# --- Room hooks --------------------------------------------------------------
+
+@rooms.on_room_created
+def attach_chat(room):
+    """Hook: give every new room its own ChatLog (room.chat, contract F)."""
+    room.chat = ChatLog()
+
+
+@rooms.on_member_joined
+def send_chat_history(room, member, rejoin, last_seq):
+    """Hook: send the joining member CHAT_HISTORY {messages}.
+
+    chat.py is imported last (server/bootstrap.py), so the joiner has already
+    received USER_LIST and SNAPSHOT/SYNC_DELTA. history_for(member.name) holds
+    the last 200 room messages plus only this user's own DMs, so no one sees
+    other people's DMs. This also runs on a rejoin: the server does not track
+    which messages a reconnecting client already has, so it resends the whole
+    history and the client drops duplicates by msg_id.
+    """
+    room.send_to(member.name, protocol.CHAT_HISTORY,
+                 {"messages": room.chat.history_for(member.name)})
+
+
+# --- CHAT --------------------------------------------------------------------
+
+@handler("CHAT")
+def on_chat(session, msg):
+    """Handle CHAT {text}: check the role, clean the text, broadcast to the room.
+
+    Never trust the client: permissions.can(role, 'chat') is checked first
+    (viewers may chat), the text must be a non-empty string after stripping
+    whitespace (else BAD_FORMAT) and is cut to MAX_CHAT_CHARS. The sender
+    name, msg_id and ts come from the server (dispatcher + ChatLog), never
+    from the payload.
+    """
+    if not permissions.can(session.member.role, "chat"):
+        session.send_error(protocol.FORBIDDEN, "your role may not chat", protocol.CHAT)
+        return
+    text = msg["payload"].get("text")
+    if not isinstance(text, str) or not text.strip():
+        session.send_error(protocol.BAD_FORMAT, "chat text is empty", protocol.CHAT)
+        return
+    text = text.strip()[:MAX_CHAT_CHARS]
+
+    room = session.room
+    # Storing and broadcasting under room.lock (an RLock, so broadcast may take
+    # it again) gives every client the same message order: two messages
+    # arriving on different reader threads cannot be delivered in a different
+    # order to different clients.
+    with room.lock:
+        stored = room.chat.add_room(session.member.name, text)
+        # Why a broadcast INCLUDING the sender (no `exclude`): the sender does
+        # not draw its own message locally. The echo is the single source of
+        # truth, so everyone sees the same text, msg_id, ts and order, and
+        # a message the server rejected never appears in the sender's window.
+        room.broadcast(protocol.CHAT, {
+            "msg_id": stored["msg_id"],
+            "from": stored["from"],
+            "text": stored["text"],
+            "ts": stored["ts"],
+        })
