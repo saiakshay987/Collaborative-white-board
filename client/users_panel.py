@@ -7,14 +7,19 @@ user is online. Offline users (inside the 120 s rejoin window) are shown
 greyed out. Double-clicking another user emits app.dm_requested(name),
 which P4's chat panel uses to open a direct-message conversation.
 
-The panel never touches the network: it only listens to app.users_changed,
-which is emitted on the GUI thread.
+Online users also show their round-trip time (averaged by the server and
+sent in STATS every 2 s), e.g. "alice (host) - 3.2 ms". The text is
+colored green, amber or red by the stats panel's thresholds.
+
+The panel never touches the network: it only listens to app.users_changed
+and stats_panel.model.updated, both emitted on the GUI thread.
 """
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
+from client import stats_panel
 from client.registry import register_panel
 
 DOT_SIZE = 12
@@ -54,7 +59,23 @@ class UsersPanel(QWidget):
         layout.addWidget(self.list)
         app.users_changed.connect(self.refresh)
         app.role_changed.connect(self.refresh)
+        # STATS arrives every 2 s: only the RTT texts change, so update the
+        # rows in place instead of rebuilding them (keeps the selection).
+        stats_panel.model.updated.connect(self.update_rtt)
         self.refresh()
+
+    def _row(self, u):
+        """Return (text, color or None) for one user dict from app.users."""
+        name = u.get("name", "?")
+        text = "%s  (%s)" % (name, u.get("role", "?"))
+        if name == self.app.me.username:
+            text += "  - you"
+        if not u.get("online"):
+            return text + "  - offline", None
+        ms = stats_panel.model.rtt_of(name)
+        if ms is None:
+            return text, None
+        return text + "  - " + stats_panel.fmt_rtt(ms), stats_panel.rtt_color(ms)
 
     def refresh(self):
         """Rebuild the rows from app.users."""
@@ -64,11 +85,7 @@ class UsersPanel(QWidget):
             name = u.get("name", "?")
             is_online = bool(u.get("online"))
             online += is_online
-            text = "%s  (%s)" % (name, u.get("role", "?"))
-            if name == self.app.me.username:
-                text += "  - you"
-            if not is_online:
-                text += "  - offline"
+            text, color = self._row(u)
             item = QListWidgetItem(color_dot(u.get("color"), is_online), text)
             item.setData(Qt.UserRole, name)
             if not is_online:
@@ -76,8 +93,23 @@ class UsersPanel(QWidget):
                 font = QFont(item.font())
                 font.setItalic(True)
                 item.setFont(font)
+            elif color is not None:
+                item.setForeground(color)
             self.list.addItem(item)
         self.header.setText("%d online, %d total" % (online, len(self.app.users)))
+
+    def update_rtt(self):
+        """New STATS: refresh the RTT part of each online user's row in place."""
+        users = {u.get("name"): u for u in self.app.users}
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            u = users.get(item.data(Qt.UserRole))
+            if u is None or not u.get("online"):
+                continue
+            text, color = self._row(u)
+            item.setText(text)
+            if color is not None:
+                item.setForeground(color)
 
     def _on_double_click(self, item):
         """Double-click on another user: ask for a DM conversation with them."""
