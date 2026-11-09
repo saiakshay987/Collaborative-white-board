@@ -1,6 +1,6 @@
 # CONTRACT.md
 
-Revision 1. Frozen: additions only, applied by P1.
+Revision 2. Frozen: additions only, applied by P1.
 
 Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 applies it within 30 minutes and replies `CONTRACT rev N`. Until then, keep using the old shape.
 
@@ -145,6 +145,7 @@ Each `kinds_*.py` exports `KINDS = {kind: {'required': {field: type}, 'defaults'
 - `client/ops.py` (P1, frozen): `send_op(app, type, payload) -> op_id` creates the op_id, calls `app.board.apply_local(...)`, then `app.net.send(...)`. Every board change by every tool (P2, P3, P4) goes through it; nobody sends OP_* with net.send directly.
 - `client/board_model.py` (P3): BoardModel(QObject) with `.objects` (ordered dict), `.last_seq`, `.apply_local(type, payload, op_id)`, `.apply_remote(msg)`, `.load_snapshot(payload)` and signal `changed(obj_id_or_None)`.
 - `client/canvas.py` (P2): CanvasWidget with `screen_to_board(pt)`, `board_to_screen(pt)`, `snap(pt)`, `zoom`, `offset` and signal `cursor_moved(float, float)`.
+  Also: `show_grid` / `set_show_grid(on)`, `snap_enabled` / `set_snapping(on)`.
 - Tool classes (registered with `register_tool`): attributes `id`, `label`, `shortcut`, `group`; methods `on_press(canvas, p, ev)`, `on_move(canvas, p, ev)`, `on_release(canvas, p, ev)`, `cursor()`. p is in board units and already snapped when snapping is on.
 - Renderers: `register_renderer(kind, fn(painter, obj, ctx))`. `render.render_board(painter, objects, ctx)` paints in z order; P3's exports reuse it on a QImage or a QPdfWriter.
 
