@@ -27,7 +27,7 @@ signals and on_message handlers.
 - No dependency except PyQt5. Only static imports (PyInstaller needs them).
 - Docstring on every class and function; comment networking logic well. The code is
 graded and every owner explains it in a viva.
-- After each task: tell me how to test it, then commit with prefix [P<n>] and
-integrate:
+- After each task: tell me how to test it, then commit with prefix [P<n>],
 git fetch origin; git rebase origin/main; run python run_server.py and
-python run_client.py; git push origin HEAD:main. Never force-push.
+python run_client.py; git push origin HEAD:p<n>-<topic> and open a PR into
+main. Never force-push. Never add Co-Authored-By or AI attribution lines.
