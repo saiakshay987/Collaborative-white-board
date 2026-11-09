@@ -1,8 +1,9 @@
 # OWNER: P4
 """permissions.py: can(role, action): the role/permission table for host, editor and viewer.
 
-Skeleton stub written by P1 so the server runs; P4 replaces can() with the
-real table from contract section C4.
+Implements contract section C4. The server calls can(member.role, action)
+BEFORE it changes any room state; the client is never trusted to enforce roles
+(the client only greys out buttons for convenience).
 """
 
 # The actions of contract section F (server).
@@ -11,10 +12,28 @@ ACTIONS = frozenset([
     "clear", "version_restore", "set_role", "kick",
 ])
 
+# Actions every non-viewer may do: everything that changes the board.
+_EDITOR_ACTIONS = frozenset(["draw", "undo", "upload", "version_save", "chat", "cursor"])
+
+# role -> set of allowed actions (contract C4).
+#   host   : everything, including the destructive/administrative actions
+#            (clear, version_restore, set_role, kick)
+#   editor : draw, undo, upload, version_save, chat, cursor
+#   viewer : read-only, may only chat and move a cursor
+_TABLE = {
+    "host": ACTIONS,
+    "editor": _EDITOR_ACTIONS,
+    "viewer": frozenset(["chat", "cursor"]),
+}
+
 
 def can(role, action):
-    """Return True if role may perform action.
+    """Return True if `role` may perform `action`, according to contract C4.
 
-    STUB: allows everything for now. P4 implements the real table.
+    Default deny: an unknown role, an unknown action, or a value of the wrong
+    type (e.g. None or a list coming from a malformed message) returns False.
     """
-    return True
+    try:
+        return action in _TABLE.get(role, frozenset())
+    except TypeError:  # unhashable role (e.g. a list from a hostile client)
+        return False
