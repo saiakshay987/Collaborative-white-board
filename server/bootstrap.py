@@ -1,5 +1,24 @@
 # OWNER: P1
-"""bootstrap.py: Imports every server module with plain static imports in the contract order (PyInstaller needs them).
+"""bootstrap.py: Imports every server module so their @handler and rooms hooks register.
 
-Stub only; no logic yet.
+Contract section G. Plain static imports (PyInstaller cannot see dynamic
+imports). The ORDER matters: hooks run in registration order, so a joining
+client gets USER_LIST (presence), then SNAPSHOT/SYNC_DELTA (P3), then
+CHAT_HISTORY (chat stays last).
 """
+
+# P1
+from server import dispatcher  # noqa: F401
+from server import rooms  # noqa: F401
+from server import presence  # noqa: F401
+# P4
+from server import permissions  # noqa: F401
+# P3
+from server import board_state  # noqa: F401
+from server import board_ops  # noqa: F401
+from server import undo  # noqa: F401
+from server import sync  # noqa: F401
+from server import versions  # noqa: F401
+from server import assets  # noqa: F401
+# P4 (last)
+from server import chat  # noqa: F401
