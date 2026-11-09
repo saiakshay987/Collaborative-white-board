@@ -28,8 +28,7 @@ signals and on_message handlers.
 - Docstring on every class and function; comment networking logic well. The code is
 graded and every owner explains it in a viva.
 - Team: P1 = Sharwan, P2 = Akshay, P3 = Janith, P4 = Harshith.
-- Before committing, check git config user.name. If it is not my name from the Team line,
-  stop and tell me to run: git config user.name "<my name>" and git config user.email "<my GitHub email>".
+- Before committing, check git config user.email is set (it must be my GitHub email). The person's name goes in the commit prefix "[P<n> <Name>]", so user.name can be anything.
 - Each task gets its own branch named <myname>/<topic> in lowercase (e.g. sharwan/net-client,
   akshay/pen-tool), created from origin/main. If my previous PR is not merged yet, branch from
   my previous branch instead and tell me.
