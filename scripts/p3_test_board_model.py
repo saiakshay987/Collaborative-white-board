@@ -609,6 +609,39 @@ class AgainstTheServerTests(ModelTestCase):
         late.load_snapshot(server.snapshot_payload())
         self.assertEqual(late.checksum(), server.checksum())
 
+    def test_undo_and_redo_need_no_client_logic(self):
+        """UNDO/REDO answers are ordinary OP_* with cause; the model applies them like remote ops."""
+        from server.undo import UndoManager
+        server, undo = BoardState(), UndoManager()
+
+        def accepted(type_, user, payload, op_id=None):
+            """A client op accepted by the server (recorded for undo) and fed to the model."""
+            prev = server.get_copy(payload.get('obj_id'))
+            e = server.apply({'v': 1, 'type': type_, 'room': 'R', 'user': user, 'op_id': op_id,
+                              'seq': None, 'ts': 1.0, 'payload': copy.deepcopy(payload)})
+            undo.record(user, e, prev)
+            self.board.apply_remote(copy.deepcopy(e))
+
+        def history(step, user, op_id):
+            """What board_ops._process_history does: inverse op, cause, restore=True, broadcast."""
+            e = step(user, server)
+            e['op_id'], e['payload']['cause'] = op_id, 'undo' if step == undo.undo else 'redo'
+            self.board.apply_remote(copy.deepcopy(server.apply(e, restore=True)))
+
+        accepted('OP_ADD', 'ann', {'obj': rect('ann-1')})
+        accepted('OP_ADD', 'bob', {'obj': rect('bob-1')})
+        accepted('OP_ADD', 'ann', {'obj': rect('ann-2')})
+        accepted('OP_DELETE', 'ann', {'obj_id': 'bob-1'})
+        history(undo.undo, 'ann', 'ann-u1')      # brings bob-1 back (same owner and z)
+        history(undo.undo, 'ann', 'ann-u2')      # removes ann-2
+        history(undo.redo, 'ann', 'ann-r1')      # ann-2 returns
+        self.assertEqual(self.board.last_seq, server.seq)
+        self.assertEqual(self.board.checksum(), server.checksum())
+        # dict order may differ (the renderer sorts by z); the z order must be the server's
+        by_z = lambda b: [o['id'] for o in sorted(b.objects.values(), key=lambda o: o['z'])]  # noqa: E731
+        self.assertEqual(by_z(self.board), by_z(server))
+        self.assertEqual(self.board.objects['bob-1']['owner'], 'bob')
+
 
 if __name__ == '__main__':
     unittest.main()

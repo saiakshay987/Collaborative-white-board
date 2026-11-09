@@ -590,7 +590,9 @@ class FakeSession:
         return [(p, e) for t, p, e in self.sent if t == type_]
 
 
-class HandlerTests(unittest.TestCase):
+class HandlerBase(unittest.TestCase):
+    """Room with a host, two editors and a viewer, plus helpers; the tests are in the subclasses."""
+
     def setUp(self):
         """A room with a host, two editors and a viewer; swap in the test registries."""
         self._kinds, self._can = models.KINDS, permissions.can
@@ -626,6 +628,11 @@ class HandlerTests(unittest.TestCase):
             if other is not session:
                 self.assertEqual(other.sent, [], other.member.name)
         self.assertEqual(self.room.board.seq, seq_before)
+
+
+
+class HandlerTests(HandlerBase):
+    """OP_* handlers: permissions, validation, echo rule, seq order."""
 
     # -- accepted operations ------------------------------------------------
     def test_add_is_echoed_to_everyone_including_the_sender(self):
@@ -881,6 +888,170 @@ class SyncTests(unittest.TestCase):
         for e in payload['ops']:
             client.apply(e)
         self.assertEqual(list(client.objects.items()), list(self.room.board.objects.items()))
+
+
+class UndoHandlerTests(HandlerBase):
+    """UNDO / REDO through the dispatcher (contract E6): the scenario of the task and the edge cases."""
+
+    def stroke(self, session, oid):
+        """Send one complete stroke (two parts) as `session`."""
+        self.send(session, 'OP_STROKE_PART', {'obj_id': oid, 'points': [[0, 0], [1, 1]],
+                                              'done': False, 'style': STYLE}, op_id=oid + '-a')
+        self.send(session, 'OP_STROKE_PART', {'obj_id': oid, 'points': [[2, 2]], 'done': True},
+                  op_id=oid + '-b')
+
+    def ids(self):
+        """Ids of the objects on the server board, in paint order."""
+        return list(self.room.board.objects)
+
+    def clear_inboxes(self):
+        """Forget everything received so far."""
+        for s in self.everyone:
+            s.sent.clear()
+
+    def test_two_users_undo_only_removes_own_strokes_and_redo_brings_one_back(self):
+        for n in (1, 2, 3):
+            self.stroke(self.alice, 'alice-%d' % n)
+        for n in (1, 2):
+            self.stroke(self.bob, 'bob-%d' % n)
+        self.clear_inboxes()
+        seq0 = self.room.board.seq
+
+        self.send(self.alice, 'UNDO', {}, op_id='alice-u1')
+        self.send(self.alice, 'UNDO', {}, op_id='alice-u2')
+        # only alice's LAST TWO strokes are gone, bob's are untouched
+        self.assertEqual(self.ids(), ['alice-1', 'bob-1', 'bob-2'])
+        # every client (sender included) got two ordinary OP_DELETEs with fresh consecutive seqs
+        for s in self.everyone:
+            got = s.of_type('OP_DELETE')
+            self.assertEqual([(p['obj_id'], e['seq']) for p, e in got],
+                             [('alice-3', seq0 + 1), ('alice-2', seq0 + 2)], s.member.name)
+            self.assertEqual([p['cause'] for p, _ in got], ['undo', 'undo'])
+            self.assertEqual([e['op_id'] for _, e in got], ['alice-u1', 'alice-u2'])
+            self.assertEqual({e['user'] for _, e in got}, {'alice'})
+
+        self.clear_inboxes()
+        self.send(self.alice, 'REDO', {}, op_id='alice-r1')
+        # ONE stroke came back: the one undone last (alice-2)
+        self.assertEqual(set(self.ids()), {'alice-1', 'alice-2', 'bob-1', 'bob-2'} - {'alice-3'})
+        back = self.bob.of_type('OP_ADD')
+        self.assertEqual(len(back), 1)
+        payload, _ = back[0]
+        self.assertEqual(payload['cause'], 'redo')
+        self.assertEqual(payload['obj']['id'], 'alice-2')
+        # the object returns as it was: same owner, same z (so the same place in the paint order)
+        self.assertEqual(payload['obj']['owner'], 'alice')
+        self.assertEqual(payload['obj']['z'], self.room.board.objects['alice-2']['z'])
+        self.assertEqual(payload['obj']['points'], [[0, 0], [1, 1], [2, 2]])
+
+    def test_restored_object_returns_to_its_place_in_the_paint_order(self):
+        self.stroke(self.alice, 'alice-1')
+        self.stroke(self.bob, 'bob-1')
+        self.send(self.alice, 'UNDO', {})
+        self.send(self.alice, 'REDO', {})
+        z = [self.room.board.objects[i]['z'] for i in self.ids()]
+        self.assertEqual(z, sorted(z))                       # still sorted by z
+        self.assertEqual(self.ids(), ['alice-1', 'bob-1'])   # alice-1 is below bob-1 again
+
+    def test_cause_cannot_be_forged_by_a_client(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1'), 'cause': 'undo'})
+        payload, _ = self.bob.of_type('OP_ADD')[0]
+        self.assertNotIn('cause', payload)                   # stripped by clean_add
+
+    def test_undo_update_restores_only_the_changed_fields(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1', x=10)})
+        self.send(self.alice, 'OP_UPDATE', {'obj_id': 'alice-1', 'set': {'x': 99}})
+        self.send(self.bob, 'OP_UPDATE', {'obj_id': 'alice-1', 'set': {'x': 50, 'color': '#00ff00'}})
+        self.send(self.alice, 'UNDO', {})
+        obj = self.room.board.objects['alice-1']
+        self.assertEqual(obj['x'], 10)                       # alice's undo wins on the field she changed
+        self.assertEqual(obj['color'], '#00ff00')            # bob's colour is untouched
+        upd, _ = self.bob.of_type('OP_UPDATE')[-1]
+        self.assertEqual((upd['set'], upd['cause']), ({'x': 10}, 'undo'))
+
+    def test_undo_of_a_delete_brings_the_object_back_and_redo_deletes_again(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1')})
+        self.send(self.bob, 'OP_ADD', {'obj': rect('bob-1')})
+        self.send(self.alice, 'OP_DELETE', {'obj_id': 'bob-1'})   # alice erases bob's rectangle
+        self.assertEqual(self.ids(), ['alice-1'])
+        self.send(self.alice, 'UNDO', {})
+        self.assertEqual(self.ids(), ['alice-1', 'bob-1'])
+        self.assertEqual(self.room.board.objects['bob-1']['owner'], 'bob')   # owner kept
+        self.send(self.alice, 'REDO', {})
+        self.assertEqual(self.ids(), ['alice-1'])
+
+    def test_object_deleted_by_somebody_else_is_skipped(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1')})
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-2')})
+        self.send(self.bob, 'OP_DELETE', {'obj_id': 'alice-2'})   # bob deletes alice's newest object
+        self.clear_inboxes()
+        self.send(self.alice, 'UNDO', {})
+        # alice-2 is gone, so the previous step (alice-1) is undone instead
+        self.assertEqual(self.ids(), [])
+        self.assertEqual([p['obj_id'] for p, _ in self.bob.of_type('OP_DELETE')], ['alice-1'])
+
+    def test_nothing_to_undo_or_redo_is_not_found_for_the_sender_only(self):
+        seq = self.room.board.seq
+        self.send(self.alice, 'UNDO', {})
+        self.assert_rejected(self.alice, 'NOT_FOUND', seq)
+        self.assertEqual(self.alice.of_type('ERROR')[-1][0]['ref_type'], 'UNDO')
+        self.clear_inboxes()
+        self.send(self.alice, 'REDO', {})
+        self.assert_rejected(self.alice, 'NOT_FOUND', seq)
+        # bob has drawn, alice has not: alice still cannot undo bob's stroke
+        self.stroke(self.bob, 'bob-1')
+        self.clear_inboxes()
+        seq = self.room.board.seq
+        self.send(self.alice, 'UNDO', {})
+        self.assert_rejected(self.alice, 'NOT_FOUND', seq)
+        self.assertEqual(self.ids(), ['bob-1'])
+
+    def test_viewer_is_forbidden(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1')})
+        self.clear_inboxes()
+        seq = self.room.board.seq
+        self.send(self.view, 'UNDO', {})
+        self.assert_rejected(self.view, 'FORBIDDEN', seq)
+        self.assertEqual(self.ids(), ['alice-1'])
+
+    def test_new_action_clears_the_redo_stack(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1')})
+        self.send(self.alice, 'UNDO', {})
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-2')})   # new action ends the redo chain
+        self.clear_inboxes()
+        seq = self.room.board.seq
+        self.send(self.alice, 'REDO', {})
+        self.assert_rejected(self.alice, 'NOT_FOUND', seq)
+        self.assertEqual(self.ids(), ['alice-2'])
+
+    def test_clear_is_not_undoable_and_forgets_every_history(self):
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-1')})
+        self.send(self.bob, 'OP_ADD', {'obj': rect('bob-1')})
+        self.send(self.bob, 'OP_DELETE', {'obj_id': 'bob-1'})
+        self.send(self.host, 'OP_CLEAR', {})
+        self.clear_inboxes()
+        seq = self.room.board.seq
+        self.send(self.bob, 'UNDO', {})              # must NOT resurrect bob-1 out of a cleared board
+        self.assert_rejected(self.bob, 'NOT_FOUND', seq)
+        self.assertEqual(self.ids(), [])
+
+    def test_undo_is_one_more_operation_in_the_log(self):
+        """Inverse ops are logged, so a SYNC_DELTA replay reproduces the undo (and carries cause)."""
+        self.stroke(self.alice, 'alice-1')
+        base = self.room.board.snapshot_payload()
+        self.send(self.alice, 'OP_ADD', {'obj': rect('alice-2')})
+        self.send(self.alice, 'UNDO', {})
+        self.send(self.alice, 'UNDO', {})
+        self.send(self.alice, 'REDO', {})
+        ops = self.room.board.delta(self.room.board.seq - 4)
+        self.assertEqual([o['payload'].get('cause') for o in ops], [None, 'undo', 'undo', 'redo'])
+        client = BoardState()
+        client.load_snapshot(base)
+        for e in ops:
+            # undo/redo ops bring objects back with their ORIGINAL owner and z
+            client.apply(e, restore='cause' in e['payload'])
+        self.assertEqual(client.checksum(), self.room.board.checksum())
+        self.assertEqual(client.seq, self.room.board.seq)
 
 
 if __name__ == '__main__':

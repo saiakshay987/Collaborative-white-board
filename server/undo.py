@@ -21,6 +21,55 @@ stack they just filled.
 import copy
 from collections import deque
 
+# =============================================================================
+# UNDO RULES (contract E6). Read this before changing anything below.
+#
+# 1. Own actions only. Every user has a private undo stack and a private redo
+#    stack, keyed by the user name the SERVER stamped on the message. UNDO
+#    reverts the sender's own most recent undoable action and never anybody
+#    else's, so "A presses Ctrl+Z" cannot remove what B drew. The stacks keep
+#    at most MAX_HISTORY steps per user (older ones fall off the left end).
+#
+# 2. What is undoable: add (OP_ADD, or a whole stroke = its first
+#    OP_STROKE_PART), update (OP_UPDATE) and delete (OP_DELETE). A stroke is
+#    ONE step however many parts it was sent in. Undo of an add deletes the
+#    object, undo of a delete adds the saved copy back (same owner, same z, so
+#    it returns to its old place in the paint order), undo of an update puts
+#    the old values of exactly the fields that update changed back.
+#
+# 3. Redo. Undoing a step moves it to the redo stack; REDO repeats it. Any NEW
+#    action of the same user empties that user's redo stack (record() below),
+#    as in every editor, because the redo chain no longer fits the board.
+#
+# 4. Somebody else changed or deleted the object meanwhile.
+#    * The object is gone (deleted by another user, or by the user's own
+#      later delete): the step cannot be applied, so it is DROPPED and the
+#      previous step is tried instead (_step). With no step left, the server
+#      answers ERROR NOT_FOUND ("nothing to undo").
+#    * The object still exists but another user edited it after our action:
+#      the undo is applied anyway. It is a normal operation with a new seq,
+#      and "the later seq wins, field by field" (contract E1) decides the
+#      result. Example: we moved a shape, then B moved it again and recoloured
+#      it. Our undo moves it back to where it was before OUR move (B's move is
+#      overwritten, it has the lower seq), but B's colour stays, because only
+#      the fields our update changed are restored. An undo is never refused
+#      just because somebody else touched the object.
+#
+# 5. Why OP_CLEAR is not undoable. A clear removes every object of every user,
+#    so every step on every stack would point at an object that is gone, and
+#    an undo of a "delete" step would resurrect single objects out of a
+#    cleared board, which looks like a bug. record() therefore empties ALL
+#    stacks on a clear. Getting the board back is a job for versions: the
+#    server takes an automatic version just before it applies OP_CLEAR
+#    (contract E6, server/versions.py) and the host restores it.
+#
+# 6. The answer to UNDO/REDO is an ordinary OP_ADD / OP_UPDATE / OP_DELETE
+#    with a fresh seq and payload field cause:'undo' or 'redo' (built in
+#    server/board_ops.py). Clients apply it like any remote operation and
+#    need no undo code. Inverse operations are never passed to record().
+# =============================================================================
+
+
 from server.board_state import OP_ADD, OP_STROKE_PART, OP_UPDATE, OP_DELETE, OP_CLEAR
 
 MAX_HISTORY = 200   # undo steps remembered per user
