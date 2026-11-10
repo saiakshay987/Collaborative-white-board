@@ -42,6 +42,12 @@ FRIENDLY_ERRORS = {
     protocol.NOT_FOUND: "Nothing to undo or redo, or the item no longer exists.",
 }
 
+# Shown under the error when a Join attempt cannot reach the host. ERRORs
+# the server sends back (wrong password, ...) do not get it: those prove the
+# network works. %d is the TCP port.
+JOIN_NETWORK_HINT = ("Check: same Wi-Fi as the host? Host's firewall allows TCP %d? "
+                     "Try the host's other IP.")
+
 # The dialog currently waiting for JOIN_OK / ERROR, if any. The on_message
 # handlers below are registered once at import time and forward to it.
 _active = None
@@ -240,6 +246,11 @@ class ConnectDialog(QDialog):
         hint = ""
         if self._pending[0] == "host":
             hint = "\nIs the server running? Start it with: python run_server.py"
+        else:
+            # Join: we never got an answer from the host (connect timed
+            # out, was refused, or went silent before JOIN_OK). On a lab
+            # LAN that is almost always one of these three causes.
+            hint = "\n\n" + JOIN_NETWORK_HINT % (self.net.port or config.PORT)
         self._show_error(reason + hint)
 
     def join_ok(self, msg):
