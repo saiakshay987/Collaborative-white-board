@@ -2,9 +2,11 @@
 """chat_panel.py: Dock panel for room chat and direct messages.
 
 Contract sections C4 and F (client). The panel is a tab widget: a permanent
-"Room" tab for CHAT, plus one tab per direct-message partner (DM sending and
-receiving arrive in a later task; open_dm_tab() and the routing code are
-already here).
+"Room" tab for CHAT, plus one tab per direct-message partner. A DM tab opens
+when I double-click a user (app.dm_requested -> open_dm_tab) or automatically
+when a DM arrives. A DM that arrives while its tab is not being looked at
+adds an unread count to the tab label ("bob (2)") and shows a toast. DMs in
+CHAT_HISTORY fill the DM tabs without counting as unread.
 
 Data flow (the GUI thread is never blocked, nothing here touches a socket):
 
@@ -89,6 +91,7 @@ class ConversationView(QTextBrowser):
         self.setOpenExternalLinks(False)
         self._messages = []   # message dicts, sorted by ts
         self._ids = set()     # msg_ids already shown
+        self._note_count = 0  # source of ids for local notes
 
     # -- data ----------------------------------------------------------------
 
@@ -144,12 +147,23 @@ class ConversationView(QTextBrowser):
                 return user.get("color") or FALLBACK_COLOR
         return FALLBACK_COLOR
 
+    def add_note(self, text):
+        """Add a local grey line (e.g. "bob is not online"); it is not a network message.
+
+        Notes are stored with the messages, so they survive re-rendering.
+        """
+        self._note_count += 1
+        self.add_message({"msg_id": "note-%d" % self._note_count, "note": True,
+                          "text": text, "ts": time.time()})
+
     def _line_html(self, msg):
         """Return the HTML block for one message: HH:MM, coloured name, text.
 
         My own messages are right-aligned on a tinted background.
         Everything that comes from the network goes through html.escape.
         """
+        if msg.get("note"):
+            return ('<p style="color:#888888"><i>%s</i></p>' % html.escape(str(msg.get("text", ""))))
         sender = str(msg.get("from", "?"))
         mine = sender == self.app.me.username
         body = html.escape(str(msg.get("text", ""))).replace("\n", "<br>")
@@ -173,6 +187,8 @@ class ChatPanel(QWidget):
         self.app = app
         self._room = app.me.room          # room whose messages are shown
         self._views = {}                  # conversation key -> ConversationView
+        self._unread = {}                 # conversation key -> unread DM count
+        self._last_dm_to = None           # whom my latest DM went to (for error notes)
         self._link_up = app.net is not None and app.net.is_connected
 
         self.tabs = QTabWidget()
@@ -184,6 +200,7 @@ class ChatPanel(QWidget):
         layout.addWidget(self.input)
 
         self._tab_for(ROOM_KEY)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         app.users_changed.connect(self._on_users_changed)
         app.dm_requested.connect(self.open_dm_tab)
@@ -208,10 +225,78 @@ class ChatPanel(QWidget):
         if view is None:
             view = ConversationView(self.app, key)
             self._views[key] = view
-            self.tabs.addTab(view, ROOM_TAB if key == ROOM_KEY else key[len("dm:"):])
+            self.tabs.addTab(view, self._label(key))
         if switch:
             self.tabs.setCurrentWidget(view)
         return view
+
+    def _label(self, key):
+        """Return the tab text for a conversation: its name plus "(n)" if n DMs are unread."""
+        base = ROOM_TAB if key == ROOM_KEY else key[len("dm:"):]
+        count = self._unread.get(key, 0)
+        return "%s (%d)" % (base, count) if count else base
+
+    def _update_label(self, key):
+        """Refresh the tab text of conversation `key` (unread badge)."""
+        view = self._views.get(key)
+        if view is not None:
+            self.tabs.setTabText(self.tabs.indexOf(view), self._label(key))
+
+    def _is_being_read(self, key):
+        """True if conversation `key` is the current tab of a chat panel that is on screen."""
+        view = self._views.get(key)
+        return view is not None and self.tabs.currentWidget() is view and self.isVisible()
+
+    def _mark_read(self, key):
+        """Clear the unread badge of conversation `key`."""
+        if self._unread.pop(key, 0):
+            self._update_label(key)
+
+    def _on_tab_changed(self, _index):
+        """The user switched tabs: what is now in front counts as read."""
+        view = self.tabs.currentWidget()
+        if view is not None:
+            self._mark_read(view.key)
+
+    def showEvent(self, event):
+        """The panel became visible again (e.g. its dock tab was clicked): mark the current tab read."""
+        super().showEvent(event)
+        self._on_tab_changed(self.tabs.currentIndex())
+
+    def add_live_dm(self, payload):
+        """A DM {msg_id, from, to, text, ts} just arrived from the server.
+
+        It is shown in the tab of the other person (created if needed, without
+        stealing focus). The server also echoes my own DMs; those are shown
+        but never counted as unread. A new incoming DM whose tab is not being
+        looked at adds to the unread badge and shows a toast.
+        """
+        msg = dict(payload, type=protocol.DM)
+        key = self._conversation_key(msg)
+        if not key:
+            return
+        added = self._tab_for(key).add_message(msg)
+        if not added or msg.get("from") == self.app.me.username:
+            return
+        if not self._is_being_read(key):
+            self._unread[key] = self._unread.get(key, 0) + 1
+            self._update_label(key)
+            self.app.toast("New message from %s" % msg.get("from"))
+
+    def on_dm_error(self, payload):
+        """The server refused my latest DM: say so inside that DM tab.
+
+        P1's generic ERROR toast only gives a generic text for NOT_FOUND, so the
+        reason is written into the conversation where the user is looking.
+        """
+        name = self._last_dm_to
+        if not name:
+            return
+        if payload.get("code") == protocol.NOT_FOUND:
+            reason = "%s is not online in this room. Message not delivered." % name
+        else:
+            reason = "Message not delivered: %s" % (payload.get("text") or payload.get("code"))
+        self._tab_for("dm:" + name).add_note(reason)
 
     def open_dm_tab(self, name):
         """Switch to the DM tab with `name`, creating it first if needed.
@@ -222,6 +307,7 @@ class ChatPanel(QWidget):
         if not name or name == self.app.me.username:
             return
         self._tab_for("dm:" + name, switch=True)
+        self._mark_read("dm:" + name)   # no currentChanged if it was already current
         self.input.setFocus()
 
     def _conversation_key(self, msg):
@@ -246,8 +332,16 @@ class ChatPanel(QWidget):
     def on_join_ok(self, room_code):
         """JOIN_OK arrived: forget old messages if this is a different room."""
         if room_code != self._room:
-            for view in self._views.values():
-                view.clear_messages()
+            for key in list(self._views):
+                view = self._views[key]
+                if key == ROOM_KEY:
+                    view.clear_messages()
+                else:
+                    # DMs belong to the old room: close their tabs.
+                    self.tabs.removeTab(self.tabs.indexOf(view))
+                    view.deleteLater()
+                    del self._views[key]
+            self._unread.clear()
             self._room = room_code
         self._update_input()
 
@@ -293,12 +387,15 @@ class ChatPanel(QWidget):
             self.input.clear()
 
     def send_dm(self, name, text):
-        """Hook for the DM task: send `text` to `name`. Not implemented yet.
+        """Send DM {to, text} to `name`; returns False if the link is down.
 
-        Returns False so the typed text is kept.
+        Like CHAT, the message is not drawn locally: the server echoes it back
+        to me (and only to me and the recipient), and that echo is shown. The
+        server answers ERROR NOT_FOUND if `name` is offline; on_dm_error()
+        turns that into a note in the tab.
         """
-        self.app.toast("Direct messages are not available yet.")
-        return False
+        self._last_dm_to = name
+        return self.app.net.send(protocol.DM, {"to": name, "text": text})
 
 
 # --- Module-level wiring -------------------------------------------------------
@@ -326,6 +423,10 @@ def _dispatch(msg_type, msg):
     elif msg_type == protocol.CHAT:
         # A live CHAT payload has no `type` field; add it so it routes to the Room tab.
         _panel.add_messages([dict(payload, type=protocol.CHAT)])
+    elif msg_type == protocol.DM:
+        _panel.add_live_dm(payload)
+    elif msg_type == protocol.ERROR and payload.get("ref_type") == protocol.DM:
+        _panel.on_dm_error(payload)
 
 
 @on_message(protocol.CHAT_HISTORY)
@@ -344,6 +445,26 @@ def _on_chat(app, msg):
         _pending.append((protocol.CHAT, msg))
     else:
         _dispatch(protocol.CHAT, msg)
+
+
+@on_message(protocol.DM)
+def _on_dm(app, msg):
+    """DM {msg_id, from, to, text, ts}: a private message for me, or the echo of mine.
+
+    The server sends it only to the recipient and the sender (unicast), so
+    whatever arrives here is always a conversation I am part of.
+    """
+    if _panel is None:
+        _pending.append((protocol.DM, msg))
+    else:
+        _dispatch(protocol.DM, msg)
+
+
+@on_message(protocol.ERROR)
+def _on_error(app, msg):
+    """ERROR for a DM (recipient offline, ...): written into the DM tab by the panel."""
+    if _panel is not None:
+        _dispatch(protocol.ERROR, msg)
 
 
 @on_message(protocol.JOIN_OK)

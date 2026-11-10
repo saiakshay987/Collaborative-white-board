@@ -5,9 +5,9 @@ Contract sections C4 and E. This file holds:
   * ChatLog   - the per-room message store,
   * hooks     - room.chat = ChatLog() on room creation, CHAT_HISTORY on every
                 (re)join,
-  * CHAT      - the room-wide chat handler,
+  * CHAT      - the room-wide chat handler (broadcast),
+  * DM        - the personal chat handler (unicast to the recipient + echo),
   * SET_ROLE  - the host-only role change handler.
-The DM handler comes in a later task.
 """
 
 import threading
@@ -202,3 +202,67 @@ def on_chat(session, msg):
             "text": stored["text"],
             "ts": stored["ts"],
         })
+
+
+# --- DM ----------------------------------------------------------------------
+
+@handler("DM")
+def on_dm(session, msg):
+    """Handle DM {to, text}: a private message from the sender to ONE member.
+
+    Checks, in order (never trust the client):
+      1. permissions.can(role, 'chat'), else FORBIDDEN (viewers may DM).
+      2. `to` must be a non-empty string other than the sender and the text a
+         non-empty string after stripping, else BAD_FORMAT. Text is cut to
+         MAX_CHAT_CHARS.
+      3. The recipient must be a member of THIS room (room.members is per
+         room, so a name from another room is simply unknown) and online,
+         else NOT_FOUND. A DM to someone offline is refused rather than
+         queued, as the contract says.
+    The server alone sets msg_id, from and ts.
+
+    Unicast versus broadcast: CHAT uses room.broadcast because everybody in
+    the room is meant to read it. A DM is private, so it is NEVER broadcast.
+    It goes with room.send_to to exactly two sockets: the recipient, and the
+    sender as an echo (so the sender's window shows the same msg_id, ts and
+    order as the recipient's, and a refused DM never appears). Nobody else
+    receives a single byte of it, and ChatLog.history_for only hands it to
+    these two users later, so a third member cannot see it even after a
+    reconnect.
+    """
+    if not permissions.can(session.member.role, "chat"):
+        session.send_error(protocol.FORBIDDEN, "your role may not chat", protocol.DM)
+        return
+    payload = msg["payload"]
+    to = payload.get("to")
+    text = payload.get("text")
+    sender = session.member.name
+    if not isinstance(to, str) or not to or to == sender \
+            or not isinstance(text, str) or not text.strip():
+        session.send_error(protocol.BAD_FORMAT, "a DM needs another user and some text",
+                           protocol.DM)
+        return
+    text = text.strip()[:MAX_CHAT_CHARS]
+
+    room = session.room
+    # Same lock as CHAT: the online check, the log entry and both sends are one
+    # step, so the recipient cannot go offline in between and DMs keep their order.
+    with room.lock:
+        recipient = room.members.get(to)
+        if recipient is None or not recipient.online:
+            error = True
+        else:
+            error = False
+            stored = room.chat.add_dm(sender, to, text)
+            out = {
+                "msg_id": stored["msg_id"],
+                "from": stored["from"],
+                "to": stored["to"],
+                "text": stored["text"],
+                "ts": stored["ts"],
+            }
+            room.send_to(to, protocol.DM, out)       # unicast 1: the recipient
+            room.send_to(sender, protocol.DM, out)   # unicast 2: echo to the sender
+    if error:
+        session.send_error(protocol.NOT_FOUND, "%s is not online in this room" % to,
+                           protocol.DM)
