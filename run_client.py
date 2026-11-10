@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QApplication, QLabel
 import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
 from client.board_model import BoardModel
+from client import cursor_overlay
 from client.connect_dialog import ConnectDialog
 from client.main_window import MainWindow
 from client.net_client import NetClient
@@ -78,6 +79,7 @@ def main():
     window = MainWindow(app)
     app.window = window
     wire_status(app, window)
+    cursor_overlay.install(app)  # live cursors need app.canvas, built by MainWindow
     window.show()
     code = qapp.exec_()
     app.net.disconnect()
