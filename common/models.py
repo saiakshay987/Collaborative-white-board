@@ -2,10 +2,11 @@
 """models.py: Merged board-object kinds registry and validate_obj (contract section D).
 
 Each common/kinds_*.py file (P2 draw, P4 text, P3 image) exports
-    KINDS = {kind: {"required": {field: type}, "defaults": {...}}}
+    KINDS = {kind: {"required": {field: type}, "defaults": {...},
+                    "limits": {field: [min, max]}}}      # limits optional (rev 3)
 This module merges them into one registry and checks objects against it.
-The server calls validate_obj before accepting an OP_ADD; a client may call
-it before sending.
+The server calls validate_obj before accepting an OP_ADD and on the merged
+object of an OP_UPDATE; a client may call it before sending.
 """
 
 import math
@@ -55,13 +56,52 @@ def _type_ok(value, expected):
     return isinstance(value, types)
 
 
+def _limit_ok(value, bounds):
+    """Return (ok, what) for one value against its [min, max] limits.
+
+    Numbers (int or float, never bool, never NaN or infinity) must lie within
+    [min, max] inclusive. Strings must have a LENGTH within [min, max].
+    Any other type cannot be range-checked and fails. "what" is "value" or
+    "length" so the caller can build a clear reason.
+    """
+    lo, hi = bounds
+    if isinstance(value, str):
+        return lo <= len(value) <= hi, "length"
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return False, "type"
+    if not math.isfinite(value):
+        return False, "type"
+    return lo <= value <= hi, "value"
+
+
+def _check_limits(obj, limits):
+    """Check every field of obj named in a kind's "limits" dict (contract rev 3).
+
+    Only fields present in obj are checked; a missing field is handled by the
+    required/defaults rules. Returns (True, "") or (False, reason naming the
+    field).
+    """
+    for field, bounds in limits.items():
+        if field not in obj:
+            continue
+        ok, what = _limit_ok(obj[field], bounds)
+        if ok:
+            continue
+        if what == "type":
+            return False, "bad type for limited field %r" % field
+        return False, "field %r %s out of range [%s, %s]" % (field, what, bounds[0], bounds[1])
+    return True, ""
+
+
 def validate_obj(obj):
     """Check a board object against the merged KINDS registry.
 
     Returns (True, "") if obj is a dict with a string id, a known kind and
     every required field of that kind with the right type; otherwise
     (False, reason) with a short human-readable reason. Fields listed in the
-    kind's "defaults" may be missing. The object is not modified.
+    kind's "defaults" may be missing. If the kind has "limits", each limited
+    field present in obj must also be within them (numbers by value, strings
+    by length). The object is not modified.
     """
     if not isinstance(obj, dict):
         return False, "object is not a dict"
@@ -79,4 +119,6 @@ def validate_obj(obj):
             return False, "missing field %r" % field
         if not _type_ok(obj[field], typ):
             return False, "bad type for field %r" % field
-    return True, ""
+    # Contract rev 3: optional per-kind value/length limits. A kind without
+    # "limits" skips this and behaves exactly as in rev 2.
+    return _check_limits(obj, spec.get("limits", {}))
