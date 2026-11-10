@@ -49,11 +49,11 @@ import os
 import time
 
 from PyQt5.QtCore import QMarginsF, QObject, QPointF, QRectF, Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
+from PyQt5.QtGui import QColor, QFont, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from common import config, models, protocol
-from client import ops, registry, render
+from client import ops, registry, render, render_image
 from client.canvas import CULL_MARGIN, object_bounds
 from client.registry import register_menu_action
 
@@ -285,49 +285,21 @@ PDF_PAGE_MARGIN_MM = 10
 PDF_FOOTER_MM = 7           # height reserved under the board for the footer line
 FOOTER_SUFFIX = "exported from LAN Whiteboard"
 EXPORT_IMAGE_KIND = "_export_image"     # client-local stand-in kind, never sent anywhere
-PLACEHOLDER_FILL = QColor("#ececec")
-PLACEHOLDER_LINE = QColor("#9a9a9a")
+PLACEHOLDER_FILL = render_image.PLACEHOLDER_FILL      # kept as names of this module (the tests read them)
+PLACEHOLDER_LINE = render_image.PLACEHOLDER_LINE
 
 
 class ExportError(Exception):
     """An export that cannot be done; the text is shown to the user as a toast."""
 
 
-def _number(value, default=0.0):
-    """value as a finite float, or default (a damaged object must not crash an export)."""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return default
-    return number if math.isfinite(number) else default
-
-
 def draw_placeholder(painter, obj):
     """Paint the stand-in of an image that is not available: a grey box, a cross and the word 'image'.
 
-    Everything is in board units and uses ordinary (not cosmetic) pens, so it
-    scales with the export. A box of unusable size is skipped.
+    The drawing itself is render_image.paint_placeholder, the same one the
+    canvas uses while a picture is still loading, so both look alike.
     """
-    box = QRectF(_number(obj.get("x")), _number(obj.get("y")),
-                 _number(obj.get("w")), _number(obj.get("h"))).normalized()
-    if box.width() < 1 or box.height() < 1:
-        return
-    pen = QPen(PLACEHOLDER_LINE)
-    pen.setWidthF(2.0)
-    painter.setPen(pen)
-    painter.setBrush(PLACEHOLDER_FILL)
-    painter.drawRect(box)
-    painter.drawLine(box.topLeft(), box.bottomRight())
-    painter.drawLine(box.topRight(), box.bottomLeft())
-    size = min(24.0, box.height() / 4.0, box.width() / 6.0)
-    if size >= 6:
-        font = QFont()
-        font.setPixelSize(int(size))
-        painter.setFont(font)
-        painter.setPen(PLACEHOLDER_LINE.darker(150))
-        painter.fillRect(QRectF(box.center().x() - size * 2, box.center().y() - size, size * 4, size * 2), PLACEHOLDER_FILL)
-        painter.drawText(QRectF(box.center().x() - size * 2, box.center().y() - size, size * 4, size * 2),
-                         Qt.AlignCenter, "image")
+    render_image.paint_placeholder(painter, render_image.box_of(obj), "image")
 
 
 def _render_export_image(painter, obj, ctx):

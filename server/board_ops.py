@@ -150,13 +150,35 @@ def _object_id(payload):
     return (payload.get('obj') or {}).get('id')
 
 
-def _process(session, msg, action, clean, check=None, before=None):
+def verify_asset(room, payload):
+    """Under the lock: an image object may only name a picture that was uploaded to THIS room.
+
+    Applies to OP_ADD of an image and to an OP_UPDATE that changes the
+    asset_id of one. Without it a client could point objects at ids that
+    do not exist (every other client would ask for them in vain) or at
+    strings that were never checked. Other kinds are not touched.
+    """
+    if 'obj' in payload:                                    # OP_ADD
+        obj = payload['obj']
+    else:                                                   # OP_UPDATE: the stored object plus the new fields
+        stored = room.board.objects.get(payload['obj_id'])
+        obj = dict(stored, **payload['set']) if stored is not None and 'asset_id' in payload['set'] else {}
+    if obj.get('kind') != 'image':
+        return
+    assets = getattr(room, 'assets', None)
+    if assets is None or not assets.has(obj.get('asset_id')):
+        raise BoardError(protocol.NOT_FOUND, 'the picture of this image was not uploaded to this room')
+
+
+def _process(session, msg, action, clean, check=None, before=None, verify=None):
     """Run one board operation through the pipeline described in the module docstring.
 
     action: the permission to test ('draw' or 'clear'); clean: payload checker;
     check: optional extra check done under the lock (check(board, payload));
     before: optional step done under the lock once every check has passed and
-    right before the operation is applied (before(room, user)).
+    right before the operation is applied (before(room, user));
+    verify: optional check done under the lock that needs the whole room, not
+    just the board (verify(room, payload)).
     """
     room, user, op_type = session.room, msg['user'], msg['type']
     try:
@@ -174,6 +196,8 @@ def _process(session, msg, action, clean, check=None, before=None):
             board = room.board
             if check is not None:
                 check(board, payload)
+            if verify is not None:
+                verify(room, payload)
             if before is not None:
                 before(room, user)       # nothing can change the board between this and apply()
             env = protocol.make_msg(op_type, payload, room=room.code, user=user,
@@ -196,7 +220,7 @@ def _process(session, msg, action, clean, check=None, before=None):
 @handler(protocol.OP_ADD)
 def on_op_add(session, msg):
     """OP_ADD {obj}: add a complete object (shape, text, sticky, image)."""
-    _process(session, msg, 'draw', clean_add)
+    _process(session, msg, 'draw', clean_add, verify=verify_asset)
 
 
 @handler(protocol.OP_STROKE_PART)
@@ -208,7 +232,7 @@ def on_op_stroke_part(session, msg):
 @handler(protocol.OP_UPDATE)
 def on_op_update(session, msg):
     """OP_UPDATE {obj_id, set}: move, resize or edit an object."""
-    _process(session, msg, 'draw', clean_update, check_update)
+    _process(session, msg, 'draw', clean_update, check_update, verify=verify_asset)
 
 
 @handler(protocol.OP_DELETE)
