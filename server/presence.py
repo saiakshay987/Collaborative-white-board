@@ -21,7 +21,8 @@ resume it with the token within config.REJOIN_WINDOW_S.
 
 Heartbeat and liveness (contract C1, E4, E5) live here too, see below,
 and so does the STATS broadcast (latency and traffic, every 2 s) and the
-CURSOR relay (live cursors, see below). KICK comes in a later P1 task.
+CURSOR relay (live cursors, see below) and KICK (host removes a member,
+see below).
 """
 
 # =============================================================================
@@ -64,6 +65,7 @@ CURSOR relay (live cursors, see below). KICK comes in a later P1 task.
 # =============================================================================
 
 import math
+import secrets
 import threading
 import time
 import traceback
@@ -253,6 +255,84 @@ def on_pong(session, msg):
         samples = session.rtt_samples
         samples.append(rtt * 1000.0)
         session.rtt_ms = round(sum(samples) / len(samples), 1)
+
+
+# --- KICK --------------------------------------------------------------------
+#
+# KICK {user} (host only) removes a member from the room for good:
+#
+#   host            server                                 kicked client
+#   KICK {user} --> permissions.can(role, "kick")?
+#                   under room.lock:
+#                     USER_LEFT {reason: kicked}  ------->  stop: no auto-reconnect,
+#                     new random token (old one dead)        back to the connect dialog
+#                     detach the session from the seat
+#                     remove the seat; the left-hook sends
+#                     USER_LEFT kicked + USER_LIST to the rest
+#                   then: graceful close (FIN after USER_LEFT)
+#
+# The token is the only proof a reconnecting client has (contract E4), so
+# replacing it with a random value nobody knows makes a resume impossible
+# even if the seat were still there. The kicked client gets USER_LEFT about
+# ITSELF; that is how it knows not to reconnect (a dropped connection
+# would look exactly the same otherwise).
+
+# Seconds the kicked client gets to read USER_LEFT and close its side
+# before the server cuts the connection anyway (server.close_after_flush).
+KICK_CLOSE_GRACE_S = 2.0
+
+
+@handler(protocol.KICK)
+def on_kick(session, msg):
+    """KICK {user}: the host removes `user` from the room (contract C1).
+
+    Never trust the client: the role check uses the role the SERVER stored
+    for this member, and the target must be a string naming another member
+    of the same room. Errors go to the sender only.
+    """
+    room, me = session.room, session.member
+    if not permissions.can(me.role, "kick"):
+        session.send_error(protocol.FORBIDDEN, "only the host can remove users", protocol.KICK)
+        return
+    name = msg["payload"].get("user")
+    if not isinstance(name, str):
+        session.send_error(protocol.BAD_FORMAT, "KICK needs a user name", protocol.KICK)
+        return
+
+    with room.lock:
+        target = room.members.get(name)
+        if target is None:
+            session.send_error(protocol.NOT_FOUND, "no user %r in this room" % name, protocol.KICK)
+            return
+        if target is me:
+            session.send_error(protocol.BAD_FORMAT, "you cannot remove yourself", protocol.KICK)
+            return
+        victim = target.session  # None if the target is offline (inside the rejoin window)
+
+        # 1. Tell the target first, while it still has its connection. The
+        #    broadcast below is sent AFTER its seat is gone, so it would not
+        #    reach the target.
+        if victim is not None:
+            victim.send(protocol.USER_LEFT, {"name": target.name, "color": target.color,
+                                             "reason": rooms.REASON_KICKED})
+        # 2. Invalidate the token: JOIN_ROOM with the old token cannot resume.
+        target.token = secrets.token_hex(16)
+        # 3. Detach the connection from the seat, so its reader thread's
+        #    cleanup (_release_seat) finds no member and sends no second
+        #    USER_LEFT "timeout". Frames it still sends are refused with
+        #    NO_ROOM by the dispatcher.
+        if victim is not None:
+            victim.member = None
+            victim.room = None
+        # 4. Remove the seat; presence's left-hook tells the rest of the room
+        #    (USER_LEFT reason "kicked", then USER_LIST).
+        rooms.manager.member_left(room, target, remove=True, reason=rooms.REASON_KICKED)
+    print("[server] %s removed %s from room %s" % (me.name, name, room.code))
+
+    # 5. Close the socket outside room.lock, gracefully, so the USER_LEFT
+    #    above is delivered before the FIN.
+    if victim is not None:
+        victim.close_after_flush(KICK_CLOSE_GRACE_S)
 
 
 # --- CURSOR (live cursors) ---------------------------------------------------

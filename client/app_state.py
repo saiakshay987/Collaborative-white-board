@@ -12,7 +12,7 @@ client so modules never import each other just to find them:
     app.window       MainWindow (P4)
     app.pen          dict: color, width, tool, alpha
     app.active_tool  current tool instance
-    app.toast(text)  short notification for the user
+    app.toast(text)  short fading notification in the window corner (client/toasts.py)
 
 Signals (emitted on the GUI thread):
     users_changed()      app.users was replaced
@@ -21,6 +21,8 @@ Signals (emitted on the GUI thread):
 """
 
 from PyQt5.QtCore import QObject, pyqtSignal
+
+from client import toasts
 
 
 class Me:
@@ -70,8 +72,9 @@ class AppState(QObject):
             self.role_changed.emit()
 
     def toast(self, text):
-        """Show a short notification: the status bar for now, stdout without a window."""
-        if self.window is not None and hasattr(self.window, "statusBar"):
-            self.window.statusBar().showMessage(text, 4000)
-        else:
-            print("[toast]", text)
+        """Show a short notification as a toast (stdout while there is no window yet).
+
+        GUI thread only; network code reaches it through on_message handlers
+        and NetClient's signals, which are delivered on the GUI thread.
+        """
+        toasts.show_toast(self.window, text)

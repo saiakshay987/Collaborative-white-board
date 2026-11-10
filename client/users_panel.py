@@ -7,18 +7,25 @@ user is online. Offline users (inside the 120 s rejoin window) are shown
 greyed out. Double-clicking another user emits app.dm_requested(name),
 which P4's chat panel uses to open a direct-message conversation.
 
+Right-click on a user opens a context menu: "Send direct message", and,
+only when I am the host, "Kick" (after a confirmation it sends KICK {user};
+the server checks the role again, contract C1).
+
 Online users also show their round-trip time (averaged by the server and
 sent in STATS every 2 s), e.g. "alice (host) - 3.2 ms". The text is
 colored green, amber or red by the stats panel's thresholds.
 
-The panel never touches the network: it only listens to app.users_changed
-and stats_panel.model.updated, both emitted on the GUI thread.
+The panel only listens to app.users_changed and stats_panel.model.updated,
+both emitted on the GUI thread; its one network action is net.send(KICK),
+which only queues the message (never blocks).
 """
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
-from PyQt5.QtWidgets import QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (QLabel, QListWidget, QListWidgetItem, QMenu, QMessageBox,
+                             QVBoxLayout, QWidget)
 
+from common import protocol
 from client import stats_panel
 from client.registry import register_panel
 
@@ -53,6 +60,8 @@ class UsersPanel(QWidget):
         self.list = QListWidget()
         self.list.setToolTip("Double-click a user to send a direct message")
         self.list.itemDoubleClicked.connect(self._on_double_click)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._on_context_menu)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(self.header)
@@ -116,6 +125,36 @@ class UsersPanel(QWidget):
         name = item.data(Qt.UserRole)
         if name and name != self.app.me.username:
             self.app.dm_requested.emit(name)
+
+
+    def _on_context_menu(self, pos):
+        """Right-click on a row: DM, and Kick for the host (never on myself)."""
+        item = self.list.itemAt(pos)
+        name = item.data(Qt.UserRole) if item is not None else None
+        if not name or name == self.app.me.username:
+            return
+        menu = QMenu(self)
+        dm = menu.addAction("Send direct message")
+        kick = menu.addAction("Kick") if self.app.me.role == "host" else None
+        chosen = menu.exec_(self.list.viewport().mapToGlobal(pos))
+        if chosen is dm:
+            self.app.dm_requested.emit(name)
+        elif chosen is not None and chosen is kick:
+            self.kick(name)
+
+    def kick(self, name):
+        """Ask for confirmation, then send KICK {user: name} (host only).
+
+        The server decides: it checks permissions.can(role, "kick") itself
+        and answers a refused KICK with ERROR (shown as a toast).
+        """
+        answer = QMessageBox.question(
+            self, "Kick user", "Remove %s from the room?\nThey cannot resume their seat." % name)
+        if answer == QMessageBox.Yes and self.app.net is not None:
+            if self.app.net.send(protocol.KICK, {"user": name}):
+                self.app.toast("Removing %s..." % name)
+            else:
+                self.app.toast("Not connected.")
 
 
 register_panel("users", UsersPanel, area="right", title="Users")
