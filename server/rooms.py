@@ -21,6 +21,7 @@ order (presence, then board/sync of P3, then chat of P4):
 """
 
 import hashlib
+import logging
 import secrets
 import threading
 import time
@@ -28,6 +29,9 @@ import traceback
 from collections import OrderedDict
 
 from common import config, protocol
+
+# Debug-level log for failed sends (silent unless logging is configured).
+_log = logging.getLogger(__name__)
 
 # Room codes: 6 characters from A-Z and 2-9 without the look-alikes 0, O, 1, I
 # (contract section B), so a code read aloud in the lab is unambiguous.
@@ -241,6 +245,55 @@ class Room:
 
     # -- sending -------------------------------------------------------------
 
+    # The race these two methods avoid (check-then-use between threads):
+    #
+    # The old broadcast copied the member list under the lock, then, AFTER
+    # releasing it, read m.session again to call send(). Between the check
+    # ("m.session is not None") and the use ("m.session.send"), another
+    # thread could run member_left() (a reader thread whose socket died, the
+    # heartbeat timing a client out, a KICK) and set m.session = None, so
+    # the broadcasting thread crashed with AttributeError: 'NoneType' has no
+    # attribute 'send', and the members after it never got the message.
+    #
+    # Fix: read m.session exactly ONCE per member, under room.lock, into a
+    # local snapshot of (name, session) pairs. The local variable cannot be
+    # changed by another thread. The sending itself happens AFTER the lock
+    # is released, because sendall() can block on a slow client whose TCP
+    # window is full; holding room.lock that long would stall every other
+    # thread of the room (all ops, joins and chats wait on that lock).
+    # A snapshotted session may close meanwhile; that is fine: send() on a
+    # closed session is a no-op, and any error is caught per recipient.
+
+    def _snapshot_sessions(self, exclude=None):
+        """Return [(name, session)] of the online members, read under room.lock.
+
+        m.session is read once per member and None sessions are skipped, so
+        the caller gets references that stay valid after the lock is gone.
+        exclude: a member name to leave out.
+        """
+        with self.lock:
+            targets = []
+            for m in self.members.values():
+                session = m.session  # read ONCE; do not re-read m.session later
+                if m.online and session is not None and m.name != exclude:
+                    targets.append((m.name, session))
+            return targets
+
+    def _safe_send(self, name, session, type, payload, env):
+        """Send to one session; never raise. Return True if no error occurred.
+
+        One dead or closing client must not abort the broadcast to the rest.
+        The error is only logged at debug level: marking the member offline
+        is the job of its reader thread / the heartbeat, which notice the
+        broken socket themselves (and do it under room.lock).
+        """
+        try:
+            session.send(type, payload, **env)
+            return True
+        except (OSError, AttributeError, ValueError) as e:
+            _log.debug("send %s to %s in room %s failed: %r", type, name, self.code, e)
+            return False
+
     def broadcast(self, type, payload, exclude=None, **env):
         """Send one message to every online member of the room.
 
@@ -248,25 +301,26 @@ class Room:
         env may carry op_id, seq, user; room and ts are filled in by
         session.send. Board ops are broadcast INCLUDING the sender (echo
         rule, contract C2), so callers simply do not pass exclude there.
-        The member list is copied under the lock, so sending is safe while
-        other threads join or leave.
+        The targets are snapshotted under room.lock, then sent to outside
+        it (see the race comment above).
         """
-        for m in self.online_members():
-            if m.name != exclude:
-                m.session.send(type, payload, **env)
+        for name, session in self._snapshot_sessions(exclude):
+            # A fresh dict per recipient: session.send stamps room/ts into env.
+            self._safe_send(name, session, type, payload, dict(env))
 
     def send_to(self, name, type, payload, **env):
         """Send one message to the member called name, if online.
 
         Returns True if it was handed to the socket, False otherwise.
+        Same pattern as broadcast: session read once under the lock, sent
+        outside it.
         """
         with self.lock:
             m = self.members.get(name)
-            session = m.session if m is not None and m.online else None
-        if session is None:
-            return False
-        session.send(type, payload, **env)
-        return True
+            session = m.session if m is not None else None  # read ONCE
+            if m is None or not m.online or session is None:
+                return False
+        return self._safe_send(name, session, type, payload, env)
 
 
 # --- RoomManager -------------------------------------------------------------

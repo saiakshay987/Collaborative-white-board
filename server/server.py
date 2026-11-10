@@ -101,7 +101,10 @@ class ClientHandler(threading.Thread):
         """
         if self.closed:
             return
-        env.setdefault("room", self.room.code if self.room is not None else None)
+        # Read self.room once: KICK/LEAVE may set it to None from another
+        # thread between a "is not None" check and ".code" (check-then-use).
+        room = self.room
+        env.setdefault("room", room.code if room is not None else None)
         env["ts"] = time.time()
         try:
             framing.send_msg(self.sock, protocol.make_msg(type, payload, **env))

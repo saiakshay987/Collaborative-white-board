@@ -307,14 +307,16 @@ def on_kick(session, msg):
         if target is me:
             session.send_error(protocol.BAD_FORMAT, "you cannot remove yourself", protocol.KICK)
             return
+        # Read target.session ONCE, under room.lock, into a local: another
+        # thread (its reader thread, the heartbeat) may set it to None at
+        # any moment, but the local reference stays valid.
         victim = target.session  # None if the target is offline (inside the rejoin window)
+        victim_msg = {"name": target.name, "color": target.color,
+                      "reason": rooms.REASON_KICKED}
 
-        # 1. Tell the target first, while it still has its connection. The
-        #    broadcast below is sent AFTER its seat is gone, so it would not
-        #    reach the target.
-        if victim is not None:
-            victim.send(protocol.USER_LEFT, {"name": target.name, "color": target.color,
-                                             "reason": rooms.REASON_KICKED})
+        # 1. The target is told AFTER the lock is released (step 5): the
+        #    room broadcast below cannot reach it (its seat is gone), and
+        #    a slow socket must not hold room.lock.
         # 2. Invalidate the token: JOIN_ROOM with the old token cannot resume.
         target.token = secrets.token_hex(16)
         # 3. Detach the connection from the seat, so its reader thread's
@@ -327,9 +329,17 @@ def on_kick(session, msg):
         # 4. Remove the seat; presence's left-hook tells the rest of the room
         #    (USER_LEFT reason "kicked", then USER_LIST).
         rooms.manager.member_left(room, target, remove=True, reason=rooms.REASON_KICKED)
+    # 5. Tell the kicked client, outside room.lock. Its connection is still
+    #    open (only the seat is gone); a send error must not break KICK.
+    if victim is not None:
+        try:
+            # room= explicitly: victim.room was cleared in step 3.
+            victim.send(protocol.USER_LEFT, victim_msg, room=room.code)
+        except (OSError, AttributeError, ValueError):
+            pass  # its reader thread notices the dead socket and cleans up
     print("[server] %s removed %s from room %s" % (me.name, name, room.code))
 
-    # 5. Close the socket outside room.lock, gracefully, so the USER_LEFT
+    # 6. Close the socket outside room.lock, gracefully, so the USER_LEFT
     #    above is delivered before the FIN.
     if victim is not None:
         victim.close_after_flush(KICK_CLOSE_GRACE_S)
@@ -432,9 +442,18 @@ def stats_payload(room, counters, n_clients):
     counters is a framing.stats_snapshot() of the whole server process and
     n_clients the number of open connections, the same for every room.
     """
+    # Read each member's session (and its rtt_ms) exactly once, under
+    # room.lock: reading m.session twice could see None the second time if
+    # another thread ran member_left() in between (check-then-use race).
+    rtt = {}
     with room.lock:
-        rtt = {m.name: m.session.rtt_ms for m in room.online_members()
-               if m.session.rtt_ms is not None}
+        for m in room.members.values():
+            session = m.session
+            if not m.online or session is None:
+                continue
+            ms = session.rtt_ms  # written by the reader thread; read once
+            if ms is not None:
+                rtt[m.name] = ms
     server = dict(counters)
     server["clients"] = n_clients
     return {"rtt": rtt, "server": server}
