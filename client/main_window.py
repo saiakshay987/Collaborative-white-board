@@ -20,16 +20,25 @@ The Session menu (Copy room code, Leave, Reconnect) only uses NetClient's
 public API: disconnect(), connect_to(), send() and its four signals. All
 network results arrive as Qt signals on the GUI thread, so nothing here can
 block the window.
+
+Roles (contract C4): Session > Manage roles opens ManageRolesDialog for the
+host. The dialog only SENDS SET_ROLE {user, role}; the server decides (host
+only, valid role, target in the room, never demote the last host) and answers
+with a USER_LIST that updates every client. Hiding the menu entry or greying a
+combo box is a convenience: the server enforces the rules. A user whose role
+changes gets a toast.
 """
 
 from PyQt5.QtCore import QByteArray, QEvent, QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QKeySequence
-from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QDockWidget, QLabel,
-                             QMainWindow, QMessageBox, QShortcut)
+from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QComboBox, QDialog,
+                             QDockWidget, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
+                             QMessageBox, QPushButton, QShortcut, QVBoxLayout)
 
 from common import protocol
 from client import canvas as canvas_mod
 from client import registry
+from client.registry import on_message
 
 # registry area names -> Qt dock areas.
 _AREAS = {
@@ -52,6 +61,16 @@ SETTINGS_APP = "LAN Whiteboard"
 GEOMETRY_KEY = "window/geometry"
 
 BANNER_HEIGHT = 28
+
+# Roles the host can give (the three roles of contract C4, which the server accepts).
+ASSIGNABLE_ROLES = ("editor", "viewer", "host")
+
+# What a role means, shown in the toast a user gets when their role changes.
+ROLE_HINTS = {
+    "host": "You can draw, manage roles, clear the board and remove users.",
+    "editor": "You can draw and chat.",
+    "viewer": "You can watch and chat, but not draw.",
+}
 
 
 class ViewOnlyBanner(QLabel):
@@ -84,6 +103,139 @@ class ViewOnlyBanner(QLabel):
         return False
 
 
+class ManageRolesDialog(QDialog):
+    """Host-only dialog: one row per user with a combo box to change that user's role.
+
+    Choosing a role sends SET_ROLE {user, role} through app.net.send and
+    nothing else: the dialog never changes a role itself. The server checks
+    the request and, if it accepts it, sends USER_LIST to everybody, which
+    reaches app.users_changed and rebuilds the rows. If the server refuses
+    (ERROR with ref_type SET_ROLE) the rows are rebuilt too, so a combo box
+    never shows a role the server did not give.
+    """
+
+    def __init__(self, app, parent=None):
+        """Build the dialog for AppState app and fill it from app.users."""
+        super().__init__(parent)
+        self.app = app
+        self.setWindowTitle("Manage roles")
+        self.setMinimumWidth(380)
+        self._grid = QGridLayout()
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Pick a role for a user. The server applies it and tells everybody."))
+        layout.addLayout(self._grid)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        app.users_changed.connect(self.refresh)
+        app.role_changed.connect(self._on_my_role_changed)
+        self.refresh()
+
+    def refresh(self):
+        """Rebuild one row per user in app.users: name, online state, role combo box."""
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(None)   # gone at once, so old and new rows never overlap
+                widget.deleteLater()
+        users = self.app.users
+        hosts = [u for u in users if u.get("role") == "host"]
+        for row, user in enumerate(users):
+            name, role = user.get("name", "?"), user.get("role")
+            label = name + (" (you)" if name == self.app.me.username else "")
+            if not user.get("online", True):
+                label += " (offline)"
+            name_label = QLabel(label)
+            name_label.setStyleSheet("font-weight: bold; color: %s;" % (user.get("color") or "#555555"))
+            combo = QComboBox()
+            combo.addItems(ASSIGNABLE_ROLES)
+            if role not in ASSIGNABLE_ROLES:
+                combo.addItem(str(role))
+            combo.setCurrentText(str(role))
+            if role == "host" and len(hosts) == 1:
+                # The server refuses to demote the last host; do not offer it.
+                combo.setEnabled(False)
+                combo.setToolTip("The last host cannot be demoted. Make someone else host first.")
+            # `activated` fires only when the USER picks an entry, not when the
+            # code sets the current text above, so refreshing never sends anything.
+            combo.activated.connect(lambda _i, n=name, c=combo: self._on_choice(n, c))
+            self._grid.addWidget(name_label, row, 0)
+            self._grid.addWidget(combo, row, 1)
+
+    def _role_of(self, name):
+        """Return the role app.users lists for `name`, or None."""
+        for user in self.app.users:
+            if user.get("name") == name:
+                return user.get("role")
+        return None
+
+    def _on_choice(self, name, combo):
+        """The host picked a role in a combo box: send SET_ROLE {user, role}.
+
+        The combo box keeps showing the pick until USER_LIST (accepted) or an
+        ERROR (refused) makes refresh() show what the server really decided.
+        """
+        role = combo.currentText()
+        if role == self._role_of(name):
+            return
+        if not self.app.net.send(protocol.SET_ROLE, {"user": name, "role": role}):
+            self.app.toast("Not connected: the role was not changed.")
+            self.refresh()
+
+    def _on_my_role_changed(self):
+        """My own role changed: a user who is no longer host may not manage roles."""
+        if self.app.me.role != "host":
+            self.close()
+
+
+# The one open dialog (None when closed), so the ERROR handler can reach it.
+_dialog = None
+
+
+def _forget_dialog():
+    """Clear the reference to the dialog once it is closed."""
+    global _dialog
+    _dialog = None
+
+
+def open_manage_roles(app):
+    """Session > Manage roles: open the dialog if I am the host, else show a toast.
+
+    The role check here only saves a pointless dialog. The server checks
+    permissions.can(role, 'set_role') on every SET_ROLE itself.
+    """
+    global _dialog
+    if app.me.role != "host":
+        app.toast("Only the host can manage roles.")
+        return
+    if _dialog is not None:      # already open: bring it to the front
+        _dialog.raise_()
+        _dialog.activateWindow()
+        return
+    _dialog = ManageRolesDialog(app, app.window)
+    _dialog.setAttribute(Qt.WA_DeleteOnClose)
+    _dialog.finished.connect(_forget_dialog)
+    _dialog.show()
+
+
+@on_message(protocol.ERROR)
+def _on_role_error(app, msg):
+    """ERROR for a SET_ROLE: rebuild the open dialog so it shows the real roles.
+
+    The error text itself is shown as a toast by the generic ERROR handler.
+    """
+    if _dialog is not None and (msg.get("payload") or {}).get("ref_type") == protocol.SET_ROLE:
+        _dialog.refresh()
+
+
+registry.register_menu_action("Session", "Manage roles", open_manage_roles)
+
+
 class MainWindow(QMainWindow):
     """The application window, built from the registries."""
 
@@ -104,6 +256,7 @@ class MainWindow(QMainWindow):
         net = app.net
         self._net_state = "connected" if net is not None and net.is_connected else "disconnected"
         self._rejoin_pending = False  # a manual Reconnect waits for the TCP connection
+        self._last_role = app.me.role  # to tell a real role change from the first JOIN_OK
         self.setWindowTitle("LAN Whiteboard")
         self.resize(1200, 800)
         self._build_canvas()
@@ -355,6 +508,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         """Follow role and user changes (AppState) and the connection (NetClient)."""
         self.app.role_changed.connect(self._refresh_all)
+        self.app.role_changed.connect(self._toast_role_change)
         self.app.users_changed.connect(self._refresh_all)   # JOIN_OK always emits it
         net = self.app.net
         if net is not None:
@@ -362,6 +516,13 @@ class MainWindow(QMainWindow):
             net.reconnected.connect(lambda: self._set_net_state("connected"))
             net.reconnecting.connect(lambda: self._set_net_state("reconnecting"))
             net.disconnected.connect(lambda _reason: self._set_net_state("disconnected"))
+
+    def _toast_role_change(self):
+        """Tell me when the host changed my role (not for the role I get at join)."""
+        old, new = self._last_role, self.app.me.role
+        self._last_role = new
+        if old is not None and new is not None and new != old:
+            self.app.toast("Your role is now %s. %s" % (new, ROLE_HINTS.get(new, "")))
 
     def _refresh_all(self):
         """Update status bar, title, banner and Session menu from the current state."""
