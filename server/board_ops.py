@@ -7,6 +7,7 @@ pipeline, in this order:
     1. permissions.can(role, 'draw')  (OP_CLEAR: 'clear')     -> else ERROR FORBIDDEN
     2. check the payload; new objects go through models.validate_obj -> else ERROR BAD_FORMAT
     3. with room.lock (one operation at a time per room, so the seq order is the truth):
+         - OP_CLEAR only: save the automatic version 'before clear' (server/versions.py)
          - set seq (board.seq + 1), ts, owner and z (owner and z are set inside BoardState.apply)
          - apply it to the BoardState (this also appends it to the log)
          - undo.record(...) so the sender can undo it
@@ -14,6 +15,10 @@ pipeline, in this order:
            keeping the client's op_id so the sender can match the echo to its pending op
     4. a rejection (any BoardError) is answered with ERROR to the SENDER ONLY and
        is never broadcast; it changes no state and uses no seq.
+
+UNDO and REDO (contract E6) use the same pipeline from step 3 on, see
+_process_history: the UndoManager supplies an inverse OP_* envelope instead of
+the client, and the broadcast payload gets cause:'undo' or cause:'redo'.
 
 Never trust the client: user, seq and ts come from the server (the dispatcher
 already overwrote them in `msg`); owner and z are written by BoardState; the
@@ -26,7 +31,7 @@ import numbers
 import time
 
 from common import models, protocol
-from server import permissions
+from server import permissions, versions
 from server.board_state import (BoardError, PROTECTED_FIELDS, STROKE_DEFAULTS,
                                 MAX_PART_POINTS, MAX_POINTS)
 from server.dispatcher import handler
@@ -145,11 +150,13 @@ def _object_id(payload):
     return (payload.get('obj') or {}).get('id')
 
 
-def _process(session, msg, action, clean, check=None):
+def _process(session, msg, action, clean, check=None, before=None):
     """Run one board operation through the pipeline described in the module docstring.
 
     action: the permission to test ('draw' or 'clear'); clean: payload checker;
-    check: optional extra check done under the lock (check(board, payload)).
+    check: optional extra check done under the lock (check(board, payload));
+    before: optional step done under the lock once every check has passed and
+    right before the operation is applied (before(room, user)).
     """
     room, user, op_type = session.room, msg['user'], msg['type']
     try:
@@ -167,6 +174,8 @@ def _process(session, msg, action, clean, check=None):
             board = room.board
             if check is not None:
                 check(board, payload)
+            if before is not None:
+                before(room, user)       # nothing can change the board between this and apply()
             env = protocol.make_msg(op_type, payload, room=room.code, user=user,
                                     op_id=op_id, seq=board.seq + 1, ts=time.time())
             prev = board.get_copy(_object_id(payload))   # state BEFORE, for undo
@@ -208,7 +217,77 @@ def on_op_delete(session, msg):
     _process(session, msg, 'draw', clean_delete)
 
 
+def _version_before_clear(room, user):
+    """Save the automatic version 'before clear' so the host can get the board back.
+
+    OP_CLEAR is not undoable (contract E6); this version is the way back. It
+    is taken under room.lock right before the clear is applied, so it holds
+    exactly the board the host was looking at.
+    """
+    versions.auto_version(room, user, versions.AUTO_NAME_CLEAR)
+
+
 @handler(protocol.OP_CLEAR)
 def on_op_clear(session, msg):
-    """OP_CLEAR {}: remove every object. Host only (permission 'clear')."""
-    _process(session, msg, 'clear', clean_clear)
+    """OP_CLEAR {}: remove every object. Host only (permission 'clear').
+
+    The permission is checked first, so a rejected clear (an editor or a
+    viewer) saves no version either.
+    """
+    _process(session, msg, 'clear', clean_clear, before=_version_before_clear)
+
+
+# ---------------------------------------------------------------- undo and redo
+
+def _process_history(session, msg, cause):
+    """UNDO / REDO: turn the sender's last (undone) action into an ordinary OP_* broadcast.
+
+    cause is 'undo' or 'redo'. The rules (whose actions, deleted objects, why a
+    clear cannot be undone) are written at the top of server/undo.py. The steps:
+
+        1. permissions.can(role, 'undo')                       -> else ERROR FORBIDDEN
+        2. with room.lock: ask room.undo for the inverse envelope of THIS sender;
+           None means nothing is left to undo/redo           -> ERROR NOT_FOUND
+        3. stamp seq (board.seq + 1) and ts, mark the payload with cause, and
+           apply it with restore=True so an object that comes back keeps its
+           old owner and z (its place in the paint order)
+        4. broadcast to ALL members including the sender, as a plain OP_ADD /
+           OP_UPDATE / OP_DELETE with the UNDO's op_id, so clients need no undo logic
+
+    undo.record() is NOT called for the inverse operation: that would wipe the
+    redo stack the UndoManager has just filled (contract E6).
+    """
+    room, user = session.room, msg['user']
+    try:
+        if not permissions.can(session.member.role, 'undo'):
+            raise BoardError(protocol.FORBIDDEN, '%s is not allowed to undo' % session.member.role)
+        op_id = msg.get('op_id')
+        if op_id is not None and not isinstance(op_id, str):
+            raise BoardError(protocol.BAD_FORMAT, 'op_id must be a string')
+
+        with room.lock:     # same lock as _process: undo is one more operation in the seq order
+            board = room.board
+            step = room.undo.undo if cause == 'undo' else room.undo.redo
+            env = step(user, board)        # only the stacks of `user` are ever looked at
+            if env is None:
+                raise BoardError(protocol.NOT_FOUND, 'nothing to %s' % cause)
+            env['seq'], env['ts'], env['op_id'] = board.seq + 1, time.time(), op_id
+            env['payload']['cause'] = cause
+            # May raise BoardError only for TOO_LARGE (board full): the popped
+            # step is then lost, which is acceptable for such a corner case.
+            env = board.apply(env, restore=True)
+            room.broadcast(env['type'], env['payload'], op_id=op_id, seq=env['seq'], user=user)
+    except BoardError as exc:
+        session.send_error(exc.code, exc.text, msg['type'])
+
+
+@handler(protocol.UNDO)
+def on_undo(session, msg):
+    """UNDO {}: revert the sender's own most recent undoable action."""
+    _process_history(session, msg, 'undo')
+
+
+@handler(protocol.REDO)
+def on_redo(session, msg):
+    """REDO {}: repeat the sender's most recently undone action."""
+    _process_history(session, msg, 'redo')
