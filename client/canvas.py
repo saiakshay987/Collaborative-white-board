@@ -36,7 +36,7 @@ import traceback
 
 from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor, QPainter, QPen
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QLabel, QWidget
 
 from client import render
 from common import config
@@ -127,8 +127,11 @@ class CanvasWidget(QWidget):
 
         self.zoom = 1.0
         self.offset = QPointF(FIT_MARGIN, FIT_MARGIN)
-        self.show_grid = True
+        # Grid display and snapping are toggled together with G (shortcuts.py),
+        # so they start in the same state: off, so freehand ink is not snapped.
+        self.show_grid = False
         self.snap_enabled = False
+        self._snap_label = None      # "Snap on/off" label in the window's status bar
 
         self._pan_last = None        # last screen pos while panning, else None
         self._pan_button = None      # mouse button that started the pan
@@ -240,15 +243,33 @@ class CanvasWidget(QWidget):
         self.update()
 
     def set_snapping(self, on):
-        """Turn snap-to-grid for tool points on or off (local option)."""
+        """Turn snap-to-grid for tool points on or off (local option) and show it in the status bar."""
         self.snap_enabled = bool(on)
+        self._show_snap_status()
+
+    def _show_snap_status(self):
+        """Show 'Snap on' / 'Snap off' as a permanent label in the main window's status bar.
+
+        The label is added on first use, once app.window exists (run_client
+        sets it before show(), so the first showEvent is early enough).
+        """
+        window = getattr(self.app, "window", None)
+        if window is None or not hasattr(window, "statusBar"):
+            return
+        if self._snap_label is None:
+            self._snap_label = QLabel()
+            self._snap_label.setStyleSheet("padding: 0 6px;")
+            self._snap_label.setToolTip("Grid and snap-to-grid: press G to toggle")
+            window.statusBar().addPermanentWidget(self._snap_label)
+        self._snap_label.setText("Snap on" if self.snap_enabled else "Snap off")
 
     def showEvent(self, ev):
-        """On the first show, fit the whole page into the window."""
+        """On the first show, fit the whole page into the window and show the snap state."""
         super().showEvent(ev)
         if not self._fitted:
             self._fitted = True
             self.fit_page()
+            self._show_snap_status()
 
     # --------------------------------------------------------------- painting
     def paintEvent(self, ev):
@@ -284,8 +305,30 @@ class CanvasWidget(QWidget):
                 objects = self._visible_objects(board.objects, visible)
                 ctx = {"canvas": self, "zoom": self.zoom, "visible": visible}
                 render.render_board(painter, objects, ctx)
+            self._paint_tool_overlay(painter)
         finally:
             painter.end()
+
+    def _paint_tool_overlay(self, painter):
+        """Let the active tool draw local-only feedback on top of the board.
+
+        A tool may define paint_overlay(painter, canvas); the painter is
+        still in board units. Shape tools draw their rubber-band preview and
+        the select tool its dashed selection box here. Nothing drawn here
+        is ever sent over the network. A failing overlay is printed and
+        skipped so the board itself still paints.
+        """
+        tool = getattr(self.app, "active_tool", None)
+        fn = getattr(tool, "paint_overlay", None) if tool is not None else None
+        if fn is None:
+            return
+        painter.save()
+        try:
+            fn(painter, self)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+        finally:
+            painter.restore()
 
     def _paint_grid(self, painter, area):
         """Draw grid lines every config.GRID units, only inside area (board units).
