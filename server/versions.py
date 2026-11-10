@@ -31,7 +31,8 @@ Three jobs live in this file.
        server_data/<ROOM>/autosave.json   {format, room, seq, saved_ts, objects, versions}
 
    `versions` holds the METADATA of the versions; their object lists are in the
-   versions/ folder next to it. Every file is written ATOMICALLY: the JSON goes to
+   versions/ folder next to it. `assets` (server/assets.py) holds the metadata of the
+   pictures of the room; their bytes are in assets/<asset_id>.bin. Every file is written ATOMICALLY: the JSON goes to
    a temporary file in the same folder, is flushed to disk, and os.replace() then
    swaps it in. A crash or power cut therefore leaves either the complete old
    file or the complete new one, never a half-written file.
@@ -80,6 +81,7 @@ VERSION_FORMAT = 1              # "format" field of versions/<id>.json
 VERSIONS_DIR = 'versions'       # folder inside server_data/<room>/
 AUTO_VERSION_INTERVAL_S = 300   # 5 minutes: periodic version, taken only if the board changed
 MAX_NAME_LEN = 60               # longer version names are cut
+ASSETS_DIR = 'assets'           # folder inside server_data/<room>/ (same name as server.assets.ASSETS_DIR)
 AUTO_NAME_CLEAR = 'before clear'
 AUTO_NAME_PERIODIC = 'auto'
 AUTO_NAME_RESTORE = 'before restore '
@@ -231,6 +233,11 @@ def take_version(room, name, by, auto=False):
     return meta
 
 
+def request_save():
+    """Wake the autosave thread: something worth saving happened (a new version, a new picture). Never blocks."""
+    _wake.set()
+
+
 def push_versions(room):
     """Send VERSIONS {versions} to every online member of the room."""
     room.broadcast(protocol.VERSIONS, {'versions': room.versions.meta_list()})
@@ -316,24 +323,26 @@ _thread = None
 def room_document(room):
     """Build the autosave.json content of a room, as (JSON text, key). Takes room.lock.
 
-    key is (seq, versions.rev): when it equals the key of the last save,
-    nothing changed and the file does not need to be written again.
+    key is (seq, versions.rev, assets.rev): when it equals the key of the
+    last save, nothing changed and the file does not need to be written again.
     """
     with room.lock:
         board, store = room.board, room.versions
+        assets = getattr(room, 'assets', None)      # None in a program that does not load server.assets
         doc = {'format': AUTOSAVE_FORMAT, 'room': room.code, 'seq': board.seq,
                'saved_ts': time.time(),
                'objects': sorted(board.objects.values(), key=lambda o: o.get('z', 0)),
-               'versions': store.meta_list()}
+               'versions': store.meta_list(),
+               'assets': assets.meta_list() if assets is not None else []}
         # Serialise INSIDE the lock: the objects are shared with the live board
         # and a handler thread may change them as soon as we let go. The JSON
         # text is written to disk later, outside the lock.
         text = json.dumps(doc, separators=(',', ':'))
-        return text, (board.seq, store.rev)
+        return text, (board.seq, store.rev, assets.rev if assets is not None else 0)
 
 
 def write_atomic(path, text):
-    """Write text to path so that readers see the old file or the new one, never a mix.
+    """Write text (str, or bytes for a picture) to path so that readers see the old file or the new one, never a mix.
 
     The text goes to a temporary file in the SAME folder (os.replace must stay
     on one file system), is flushed and fsync'ed so the bytes are really on
@@ -343,7 +352,8 @@ def write_atomic(path, text):
     os.makedirs(folder, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=folder, prefix='.autosave-', suffix='.tmp')
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        binary = isinstance(text, (bytes, bytearray))
+        with os.fdopen(fd, 'wb' if binary else 'w', **({} if binary else {'encoding': 'utf-8'})) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -377,6 +387,21 @@ def _write_version_files(room, folder):
         room.versions.dropped = [v for v in room.versions.dropped if v not in dropped]
 
 
+def _write_asset_files(room, folder):
+    """Write the pictures that are not on disk yet, as <asset_id>.bin (atomic, like every file here).
+
+    Pictures are immutable and never deleted, so unlike the version files
+    there is nothing to remove. The bytes are immutable too, so they are
+    written outside room.lock.
+    """
+    assets = getattr(room, 'assets', None)
+    if assets is None:
+        return
+    for entry in assets.pending_files():
+        write_atomic(os.path.join(folder, entry['meta']['asset_id'] + '.bin'), entry['data'])
+        entry['on_disk'] = True
+
+
 def save_room(room, data_dir=None, force=False):
     """Write one room's autosave.json and its new version files. Returns True if files were written.
 
@@ -395,6 +420,7 @@ def save_room(room, data_dir=None, force=False):
             return False
         try:
             _write_version_files(room, os.path.join(data_dir, room.code, VERSIONS_DIR))
+            _write_asset_files(room, os.path.join(data_dir, room.code, ASSETS_DIR))
             write_atomic(os.path.join(data_dir, room.code, 'autosave.json'), text)
         except OSError as exc:
             print('[versions] autosave of room %s failed: %s' % (room.code, exc))
@@ -464,7 +490,7 @@ def _autosave_loop():
 # ---------------------------------------------------------------- loading from disk
 
 def load_document(path, code):
-    """Read and check one autosave.json. Returns (objects, seq, version metas) or None if unusable.
+    """Read and check one autosave.json. Returns (objects, seq, version metas, asset metas) or None if unusable.
 
     The file is data written by an earlier run, but it may be damaged or
     edited by hand, so every field is checked before it can reach a room.
@@ -483,8 +509,9 @@ def load_document(path, code):
                        for o in objects)):
         print('[versions] ignoring %s: not a valid autosave' % path)
         return None
-    metas = doc.get('versions')
-    return objects, seq, metas if isinstance(metas, list) else []
+    metas, asset_metas = doc.get('versions'), doc.get('assets')
+    return (objects, seq, metas if isinstance(metas, list) else [],
+            asset_metas if isinstance(asset_metas, list) else [])
 
 
 def restore_rooms(data_dir=None):
@@ -513,7 +540,7 @@ def restore_rooms(data_dir=None):
         loaded = load_document(path, code)
         if loaded is None:
             continue
-        objects, seq, metas = loaded
+        objects, seq, metas, asset_metas = loaded
         room = rooms.manager.create_room()
         with rooms.manager.lock, room.lock:
             del rooms.manager.rooms[room.code]
@@ -522,7 +549,10 @@ def restore_rooms(data_dir=None):
             room.board.restore(objects, seq)
             room.versions.load_meta(metas)      # first the metadata, then the files, which replace entries with a file
             room.versions.load_files(os.path.join(data_dir, code, VERSIONS_DIR))
-            room.versions.saved_key = (seq, room.versions.rev)  # identical to the file: no rewrite until something changes
+            if getattr(room, 'assets', None) is not None:
+                room.assets.load(asset_metas, os.path.join(data_dir, code, ASSETS_DIR))
+            room.versions.saved_key = (seq, room.versions.rev,        # identical to the file: no rewrite until something changes
+                                       room.assets.rev if getattr(room, 'assets', None) is not None else 0)
         restored.append(code)
         print('[versions] room %s restored from autosave (%d objects, seq %d)' % (code, len(objects), seq))
     return restored
