@@ -13,6 +13,9 @@ drag           moves the selected object.
 corner drag    resizes rect, ellipse, text, sticky and image (the kinds with
                x, y, w, h); the opposite corner stays where it is.
 Delete key     OP_DELETE for the selected object (register_shortcut).
+Escape         during a drag: put the object back where it was (one
+               OP_UPDATE with the press-time values, only if something
+               was already sent); otherwise clear the selection.
 double-click   calls the editor registered with register_editor for the
                object's kind (P4 registers text and sticky), as
                fn(app, canvas, obj).
@@ -277,6 +280,22 @@ class SelectTool:
     def cursor(self):
         """Arrow: this tool points at objects."""
         return Qt.ArrowCursor
+
+    def cancel(self, canvas):
+        """Escape (canvas.cancel_tool): undo the drag in progress, or clear the selection.
+
+        The throttle may already have sent OP_UPDATEs during the drag, so
+        the other clients have seen the object move. One more OP_UPDATE
+        with the press-time values puts it back for everyone.
+        """
+        if self._mode is None:
+            self.selected_id = None
+            return
+        self._stop_timer()
+        self._pending = None
+        if self._last_sent is not None:
+            self._send(self._orig_fields(self._last_sent))
+        self._end_drag()
 
     # ------------------------------------------------------------- drag
     def _start_drag(self, canvas, obj, mode):
