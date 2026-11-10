@@ -1,6 +1,6 @@
 # CONTRACT.md
 
-Revision 2. Frozen: additions only, applied by P1.
+Revision 3. Frozen: additions only, applied by P1.
 
 Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 applies it within 30 minutes and replies `CONTRACT rev N`. Until then, keep using the old shape.
 
@@ -117,6 +117,8 @@ Roles and permissions (`permissions.can(role, action)`; the creator is host, joi
 | image | x, y, w, h, asset_id | common/kinds_image.py (P3) |
 
 Each `kinds_*.py` exports `KINDS = {kind: {'required': {field: type}, 'defaults': {...}}}`. `models.validate_obj(obj)` returns `(ok, reason)` from the merged registry.
+
+Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For numbers the value must be within [min, max]; for strings the LENGTH must be. `validate_obj` rejects an object outside its limits with a reason naming the field. The server validates on OP_ADD and on OP_UPDATE (the object after applying `set`), replying ERROR BAD_FORMAT.
 
 ## E. Ordering, duplicates, concurrency and recovery
 
