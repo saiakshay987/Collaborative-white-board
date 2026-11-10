@@ -1,47 +1,62 @@
 # OWNER: P3
-"""versions.py: Named board versions (in memory) and autosave to disk (CONTRACT E6 and E7).
+"""versions.py: Version history (contract C3) and autosave to disk (contract E6 and E7).
 
-Two jobs live in this file.
+Three jobs live in this file.
 
-1. Versions. Every room gets `room.versions`, a VersionStore. board_ops calls
-   auto_version() just before it applies OP_CLEAR, so the host can always get
-   the board back (OP_CLEAR itself is not undoable, contract E6). Versions are
-   kept IN MEMORY only for now: each one is a deep copy of the objects. The
-   VERSION_SAVE / VERSION_LIST / VERSION_RESTORE handlers are a later step.
+1. Versions. Every room gets `room.versions`, a VersionStore: named copies of
+   the board (id, name, by, ts, seq, count). They are created by
+
+       VERSION_SAVE {name}     host or editor (permission version_save)
+       auto_version()          called by board_ops right before OP_CLEAR ('before clear')
+       VERSION_RESTORE {id}    host only: see below ('before restore <name>')
+       auto_versions_tick()    every AUTO_VERSION_INTERVAL_S (5 min), only if the board changed
+
+   VERSION_LIST (anybody) answers the sender; every change is pushed to the whole
+   room as VERSIONS {versions:[{id, name, by, ts, seq, count}]}. Each version
+   is a deep copy of the objects, kept in memory (at most MAX_VERSIONS per room)
+   AND written to server_data/<ROOM>/versions/<id>.json, so versions survive a
+   server restart.
+
+   VERSION_RESTORE first saves the current board as 'before restore <name>', so a
+   restore can itself be reversed, then replaces the board with the saved
+   objects and bumps seq by one. This is not a board operation, so nothing goes
+   into the operation log; the log is emptied instead, which makes every client
+   with an older last_seq take a SNAPSHOT (BoardState.delta refuses it) instead
+   of a delta with a hole in it. The SNAPSHOT is broadcast to everybody, the
+   sender included. The undo stacks are reset, as after a clear (undo.py rule 5).
 
 2. Autosave (contract E7). One background thread wakes up every
    AUTOSAVE_INTERVAL_S (10 s) and writes every room that changed to
 
        server_data/<ROOM>/autosave.json   {format, room, seq, saved_ts, objects, versions}
 
-   `versions` holds the METADATA of the versions only ({id, name, by, ts, seq,
-   count}); their object lists stay in memory. The file is written ATOMICALLY:
-   the JSON goes to a temporary file in the same folder, is flushed to disk,
-   and os.replace() then swaps it in. A crash or power cut therefore leaves
-   either the complete old file or the complete new one, never a half-written
-   file.
+   `versions` holds the METADATA of the versions; their object lists are in the
+   versions/ folder next to it. Every file is written ATOMICALLY: the JSON goes to
+   a temporary file in the same folder, is flushed to disk, and os.replace() then
+   swaps it in. A crash or power cut therefore leaves either the complete old
+   file or the complete new one, never a half-written file.
 
    A room is also saved when it closes: when its last online member leaves
    (the thread is woken up at once), when the room is deleted from memory, and
-   when the server process exits (atexit).
+   when the server process exits (atexit). A new version also wakes the thread
+   up, so it reaches the disk within moments.
 
-   When this module is imported (server/bootstrap.py does that when the server
-   starts) the autosave thread is started. Its first job is to load the
+3. Restore. When this module is imported (server/bootstrap.py does that when the
+   server starts) the autosave thread is started. Its first job is to load the
    autosaves found in server_data/, so rooms survive a server restart. It waits
    until server/bootstrap.py has imported EVERY module (see _bootstrap_done):
    chat.py is imported last, and a room created before its on_room_created hook
    is registered would have no room.chat.
 
 Locking. The board is only read under room.lock. File writes happen outside
-room.lock, under _save_lock, and never from a handler thread: the
-on_member_left hook only wakes the autosave thread up. That way a slow disk can
+room.lock, under _save_lock, and never from a handler thread: handlers and the
+on_member_left hook only wake the autosave thread up. That way a slow disk can
 never freeze a room, and no thread waits for room.lock while holding
 _save_lock in the opposite order (no deadlock).
 
 What is NOT restored: passwords (contract B keeps them in memory only), members
-and roles, chat, undo stacks, and the object lists of versions. The first user
-to join a restored room becomes its host (rooms.RoomManager.join: host if the
-room has nobody in it).
+and roles, chat and undo stacks. The first user to join a restored room becomes
+its host (rooms.RoomManager.join: host if the room has nobody in it).
 """
 import atexit
 import copy
@@ -54,13 +69,21 @@ import time
 import traceback
 
 from common import protocol
-from server import rooms
-from server.board_state import MAX_OBJECTS
+from server import permissions, rooms
+from server.board_state import BoardError, MAX_OBJECTS
+from server.dispatcher import handler
 
 AUTOSAVE_INTERVAL_S = 10        # contract E7
 MAX_VERSIONS = 50               # per room; the oldest are dropped (each one is a full copy)
 AUTOSAVE_FORMAT = 1             # "format" field of autosave.json
+VERSION_FORMAT = 1              # "format" field of versions/<id>.json
+VERSIONS_DIR = 'versions'       # folder inside server_data/<room>/
+AUTO_VERSION_INTERVAL_S = 300   # 5 minutes: periodic version, taken only if the board changed
+MAX_NAME_LEN = 60               # longer version names are cut
 AUTO_NAME_CLEAR = 'before clear'
+AUTO_NAME_PERIODIC = 'auto'
+AUTO_NAME_RESTORE = 'before restore '
+SERVER_USER = 'server'          # "by" of a periodic version
 BOOTSTRAP_WAIT_S = 30           # how long the autosave thread waits for server.bootstrap before giving up on restoring
 
 
@@ -87,9 +110,13 @@ def _default_data_dir():
 class VersionStore:
     """The saved versions of ONE room (room.versions). Callers hold room.lock.
 
-    Each entry is {'meta': {id, name, by, ts, seq, count}, 'objects': [...]}.
-    objects is None for an entry whose metadata was loaded from an autosave
-    file: the object lists are not written to disk, so it cannot be restored.
+    Each entry is {'meta': {id, name, by, ts, seq, count}, 'objects': [...],
+    'auto': bool, 'on_disk': bool}. objects is None for an entry whose
+    metadata came from an autosave.json of the earlier version of this server
+    and that has no file in versions/: it is listed but cannot be restored.
+    auto marks the periodic versions, which are the first to be dropped when
+    there are more than MAX_VERSIONS. on_disk is False until the autosave
+    thread has written the entry's file.
     """
 
     def __init__(self, room):
@@ -99,29 +126,48 @@ class VersionStore:
         self.next_id = 1
         self.rev = 0            # +1 on every change; autosave skips rooms whose (seq, rev) is unchanged
         self.saved_key = None   # (seq, rev) of the last autosave of this room
+        self.dropped = []       # ids whose files in versions/ still have to be deleted
+        self.last_seq = None    # board seq of the newest version: the periodic one is skipped if the board is still at it
+        self.next_auto_ts = time.time() + AUTO_VERSION_INTERVAL_S
 
-    def save(self, name, by):
+    def save(self, name, by, auto=False):
         """Copy the board's objects into a new version and return its metadata dict.
 
-        The copy is deep, so later edits never change a saved version. The
-        oldest version is dropped when there are more than MAX_VERSIONS.
+        The copy is deep, so later edits never change a saved version. When
+        there are more than MAX_VERSIONS, the oldest periodic version goes
+        first, and only if there is none the oldest version of all.
         """
         board = self.room.board
         objects = [copy.deepcopy(o) for o in board.objects.values()]    # paint order
         meta = {'id': self.next_id, 'name': name, 'by': by, 'ts': time.time(),
                 'seq': board.seq, 'count': len(objects)}
         self.next_id += 1
-        self.entries.append({'meta': meta, 'objects': objects})
-        del self.entries[:max(0, len(self.entries) - MAX_VERSIONS)]
+        self.entries.append({'meta': meta, 'objects': objects, 'auto': auto, 'on_disk': False})
+        self.last_seq = board.seq
+        self._trim()
         self.rev += 1
         return dict(meta)
+
+    def _trim(self):
+        """Drop entries until at most MAX_VERSIONS are left (periodic ones first); remember their ids for the disk."""
+        while len(self.entries) > MAX_VERSIONS:
+            victim = next((e for e in self.entries if e['auto']), self.entries[0])
+            self.entries.remove(victim)
+            self.dropped.append(victim['meta']['id'])
 
     def meta_list(self):
         """Metadata of every version, oldest first (the payload of VERSIONS)."""
         return [dict(e['meta']) for e in self.entries]
 
+    def get_meta(self, version_id):
+        """A copy of the metadata of one version, or None."""
+        for e in self.entries:
+            if e['meta']['id'] == version_id:
+                return dict(e['meta'])
+        return None
+
     def get_objects(self, version_id):
-        """A deep copy of the objects of one version, or None (unknown id, or contents not in memory)."""
+        """A deep copy of the objects of one version, or None (unknown id, or contents not available)."""
         for e in self.entries:
             if e['meta']['id'] == version_id and e['objects'] is not None:
                 return copy.deepcopy(e['objects'])
@@ -138,21 +184,123 @@ class VersionStore:
                     and isinstance(m.get('name'), str)):
                 meta = {'id': m['id'], 'name': m['name'], 'by': m.get('by'), 'ts': m.get('ts'),
                         'seq': m.get('seq'), 'count': m.get('count')}
-                self.entries.append({'meta': meta, 'objects': None})
-                self.next_id = max(self.next_id, m['id'] + 1)
-        del self.entries[:max(0, len(self.entries) - MAX_VERSIONS)]
+                self._adopt({'meta': meta, 'objects': None, 'auto': False, 'on_disk': True})
+
+    def load_files(self, folder):
+        """Load versions/<id>.json files; they replace metadata-only entries with the same id. Returns the count loaded."""
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            return 0
+        loaded = 0
+        for name in names:
+            entry = load_version_file(os.path.join(folder, name), name)
+            if entry is not None:
+                self._adopt(entry)
+                loaded += 1
+        return loaded
+
+    def _adopt(self, entry):
+        """Insert a loaded entry in id order (replacing one with the same id) and keep the counters right."""
+        vid = entry['meta']['id']
+        self.entries = [e for e in self.entries if e['meta']['id'] != vid]
+        self.entries.append(entry)
+        self.entries.sort(key=lambda e: e['meta']['id'])
+        self.next_id = max(self.next_id, vid + 1)
+        seqs = [e['meta']['seq'] for e in self.entries if isinstance(e['meta'].get('seq'), int)]
+        self.last_seq = max(seqs) if seqs else None
+        self._trim()
+
+    def pending_files(self):
+        """(entries still to be written, ids still to be deleted) for the autosave thread; takes room.lock."""
+        with self.room.lock:
+            return ([e for e in self.entries if e['objects'] is not None and not e['on_disk']],
+                    list(self.dropped))
+
+
+def take_version(room, name, by, auto=False):
+    """Save a version and tell every member (VERSIONS, contract C3). The caller holds room.lock.
+
+    The broadcast is inside the same lock, so VERSIONS reaches every client in
+    the order things happened (e.g. before the OP_CLEAR that follows it). The
+    autosave thread is woken up to write the new version's file.
+    """
+    meta = room.versions.save(name, by, auto)
+    push_versions(room)
+    _wake.set()
+    return meta
+
+
+def push_versions(room):
+    """Send VERSIONS {versions} to every online member of the room."""
+    room.broadcast(protocol.VERSIONS, {'versions': room.versions.meta_list()})
 
 
 def auto_version(room, user, name):
-    """Save an automatic version and tell every member (VERSIONS, contract C3).
+    """Save the automatic version board_ops needs before OP_CLEAR (caller holds room.lock)."""
+    return take_version(room, name, user)
 
-    The caller (board_ops, before it applies OP_CLEAR) holds room.lock. The
-    broadcast is inside the same lock, so VERSIONS reaches every client
-    before the operation that follows it.
+
+def auto_version_due(room, now):
+    """Take the periodic version of ONE room if its time has come and its board changed. Returns True if one was taken.
+
+    A room is due every AUTO_VERSION_INTERVAL_S; nothing is saved when the
+    board still has the seq of the newest version (nobody changed anything),
+    and never for a board that was never touched (seq 0).
     """
-    meta = room.versions.save(name, user)
-    room.broadcast(protocol.VERSIONS, {'versions': room.versions.meta_list()})
-    return meta
+    if getattr(room, 'versions', None) is None or room.board is None:
+        return False
+    with room.lock:
+        store = room.versions
+        if now < store.next_auto_ts:
+            return False
+        store.next_auto_ts = now + AUTO_VERSION_INTERVAL_S
+        if room.board.seq == 0 or store.last_seq == room.board.seq:
+            return False
+        take_version(room, AUTO_NAME_PERIODIC, SERVER_USER, auto=True)
+        return True
+
+
+def auto_versions_tick(now=None):
+    """Run auto_version_due for every live room (called by the autosave thread). Returns the count taken."""
+    now = time.time() if now is None else now
+    with rooms.manager.lock:
+        live = list(rooms.manager.rooms.values())
+    return sum(1 for room in live if auto_version_due(room, now))
+
+
+# ---------------------------------------------------------------- version files
+
+def version_document(entry):
+    """JSON text of versions/<id>.json for one store entry."""
+    return json.dumps({'format': VERSION_FORMAT, 'meta': entry['meta'], 'auto': entry['auto'],
+                       'objects': entry['objects']}, separators=(',', ':'))
+
+
+def load_version_file(path, filename):
+    """Read one versions/<id>.json. Returns a store entry, or None if the file is unusable.
+
+    Checked like the autosave: the id inside must match the file name, and
+    every object needs a string id and kind.
+    """
+    if not filename.endswith('.json') or not filename[:-5].isdigit():
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as exc:
+        print('[versions] cannot read %s: %s' % (path, exc))
+        return None
+    meta = doc.get('meta') if isinstance(doc, dict) else None
+    objects = doc.get('objects') if isinstance(doc, dict) else None
+    if (not isinstance(meta, dict) or meta.get('id') != int(filename[:-5]) or not isinstance(meta.get('name'), str)
+            or doc.get('format') != VERSION_FORMAT or not isinstance(objects, list) or len(objects) > MAX_OBJECTS
+            or not all(isinstance(o, dict) and isinstance(o.get('id'), str) and isinstance(o.get('kind'), str)
+                       for o in objects)):
+        print('[versions] ignoring %s: not a valid version file' % path)
+        return None
+    meta = {k: meta.get(k) for k in ('id', 'name', 'by', 'ts', 'seq', 'count')}
+    return {'meta': meta, 'objects': objects, 'auto': doc.get('auto') is True, 'on_disk': True}
 
 
 # ---------------------------------------------------------------- saving to disk
@@ -208,12 +356,35 @@ def write_atomic(path, text):
         raise
 
 
+def _write_version_files(room, folder):
+    """Write the version files that are not on disk yet and delete the files of dropped versions.
+
+    The objects of an entry are a private copy that nobody changes, so the
+    JSON can be made and written outside room.lock. An entry is marked
+    on_disk only after its file was replaced; an OSError stops here and the
+    rest is retried at the next save.
+    """
+    pending, dropped = room.versions.pending_files()
+    for entry in pending:
+        write_atomic(os.path.join(folder, '%d.json' % entry['meta']['id']), version_document(entry))
+        entry['on_disk'] = True
+    for vid in dropped:
+        try:
+            os.remove(os.path.join(folder, '%d.json' % vid))
+        except FileNotFoundError:
+            pass                            # it never reached the disk
+    with room.lock:
+        room.versions.dropped = [v for v in room.versions.dropped if v not in dropped]
+
+
 def save_room(room, data_dir=None, force=False):
-    """Write one room's autosave.json. Returns True if a file was written.
+    """Write one room's autosave.json and its new version files. Returns True if files were written.
 
     Skipped when nothing changed since the last save, unless force is True.
-    A failed write is reported and retried at the next tick (the room stays
-    "unsaved"), it never raises into the caller.
+    The version files come first (versions/<id>.json for every version not on
+    disk yet, and the files of dropped versions are deleted), then the
+    autosave.json that lists them. A failed write is reported and retried at
+    the next tick (the room stays "unsaved"), it never raises into the caller.
     """
     if getattr(room, 'versions', None) is None or room.board is None:
         return False                        # room still being created
@@ -223,6 +394,7 @@ def save_room(room, data_dir=None, force=False):
         if not force and room.versions.saved_key == key:
             return False
         try:
+            _write_version_files(room, os.path.join(data_dir, room.code, VERSIONS_DIR))
             write_atomic(os.path.join(data_dir, room.code, 'autosave.json'), text)
         except OSError as exc:
             print('[versions] autosave of room %s failed: %s' % (room.code, exc))
@@ -283,6 +455,7 @@ def _autosave_loop():
         if _stop.is_set():
             break
         try:
+            auto_versions_tick()        # first, so a new periodic version is written in this very round
             save_all()
         except Exception:  # noqa: BLE001 - the thread must survive any bug
             traceback.print_exc()
@@ -347,11 +520,86 @@ def restore_rooms(data_dir=None):
             room.code = code
             rooms.manager.rooms[code] = room
             room.board.restore(objects, seq)
-            room.versions.load_meta(metas)
+            room.versions.load_meta(metas)      # first the metadata, then the files, which replace entries with a file
+            room.versions.load_files(os.path.join(data_dir, code, VERSIONS_DIR))
             room.versions.saved_key = (seq, room.versions.rev)  # identical to the file: no rewrite until something changes
         restored.append(code)
         print('[versions] room %s restored from autosave (%d objects, seq %d)' % (code, len(objects), seq))
     return restored
+
+
+# ---------------------------------------------------------------- handlers
+
+def _require(session, action):
+    """Raise BoardError(FORBIDDEN) unless the member's role (as stored by the SERVER) may do `action`."""
+    if not permissions.can(session.member.role, action):
+        raise BoardError(protocol.FORBIDDEN, '%s is not allowed to %s' % (session.member.role, action))
+
+
+def _clean_name(value):
+    """The version name from a client payload: a printable string, whitespace collapsed, cut to MAX_NAME_LEN.
+
+    Raises BoardError(BAD_FORMAT) for a missing, non-string or empty name.
+    """
+    if not isinstance(value, str):
+        raise BoardError(protocol.BAD_FORMAT, 'name must be a string')
+    name = ' '.join(value.split())          # also turns newlines and tabs into single spaces
+    if not name or not name.isprintable():
+        raise BoardError(protocol.BAD_FORMAT, 'name must not be empty')
+    return name[:MAX_NAME_LEN]
+
+
+@handler(protocol.VERSION_SAVE)
+def on_version_save(session, msg):
+    """VERSION_SAVE {name}: store a copy of the board (host or editor) and push VERSIONS to the room."""
+    room = session.room
+    try:
+        _require(session, 'version_save')
+        name = _clean_name(msg['payload'].get('name'))
+        with room.lock:
+            take_version(room, name, msg['user'])
+    except BoardError as exc:
+        session.send_error(exc.code, exc.text, protocol.VERSION_SAVE)
+
+
+@handler(protocol.VERSION_LIST)
+def on_version_list(session, msg):
+    """VERSION_LIST {}: send the list to the sender only. Every member may ask, viewers too (it changes nothing)."""
+    with session.room.lock:
+        session.send(protocol.VERSIONS, {'versions': session.room.versions.meta_list()})
+
+
+@handler(protocol.VERSION_RESTORE)
+def on_version_restore(session, msg):
+    """VERSION_RESTORE {id}: host only. Save the current board, replace it by the version, SNAPSHOT to everyone.
+
+    Steps, all under room.lock so no board operation falls in between:
+        1. permission 'version_restore'; the id must be an integer of a version whose objects we have
+        2. save the current board as 'before restore <name>' (so this restore can be reversed)
+        3. BoardState.restore(objects, seq + 1): the board is replaced, seq bumped, the log emptied
+        4. reset the undo stacks (their steps point at objects of the old board)
+        5. VERSIONS (the list grew), then SNAPSHOT, both to EVERY member, the host included
+    """
+    room, user = session.room, msg['user']
+    try:
+        _require(session, 'version_restore')
+        vid = msg['payload'].get('id')
+        if not isinstance(vid, int) or isinstance(vid, bool):
+            raise BoardError(protocol.BAD_FORMAT, 'id must be an integer')
+        with room.lock:
+            meta = room.versions.get_meta(vid)
+            objects = room.versions.get_objects(vid)
+            if meta is None:
+                raise BoardError(protocol.NOT_FOUND, 'no version %d' % vid)
+            if objects is None:
+                raise BoardError(protocol.NOT_FOUND, "the contents of version '%s' are not available" % meta['name'])
+            take_version(room, AUTO_NAME_RESTORE + meta['name'], user)
+            room.board.restore(objects, room.board.seq + 1)
+            room.undo.reset()
+            room.broadcast(protocol.SNAPSHOT, room.board.snapshot_payload())
+            print('[versions] room %s: %s restored version %d (%s)' % (room.code, user, vid, meta['name']))
+    except BoardError as exc:
+        session.send_error(exc.code, exc.text, protocol.VERSION_RESTORE)
 
 
 # ---------------------------------------------------------------- room hooks and start-up

@@ -285,7 +285,7 @@ class RestoreTests(HandlerBase):
         versions.restore_rooms(self.dir)
         room = rooms.manager.get(code)
         old = room.versions.meta_list()[0]
-        self.assertIsNone(room.versions.get_objects(old['id']))     # contents were not written to disk
+        self.assertEqual([o['id'] for o in room.versions.get_objects(old['id'])], ['alice-1'])   # contents are in versions/<id>.json
         self.assertGreater(room.versions.save('later', 'carol')['id'], old['id'])
 
 
