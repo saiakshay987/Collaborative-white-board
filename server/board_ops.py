@@ -7,6 +7,7 @@ pipeline, in this order:
     1. permissions.can(role, 'draw')  (OP_CLEAR: 'clear')     -> else ERROR FORBIDDEN
     2. check the payload; new objects go through models.validate_obj -> else ERROR BAD_FORMAT
     3. with room.lock (one operation at a time per room, so the seq order is the truth):
+         - OP_CLEAR only: save the automatic version 'before clear' (server/versions.py)
          - set seq (board.seq + 1), ts, owner and z (owner and z are set inside BoardState.apply)
          - apply it to the BoardState (this also appends it to the log)
          - undo.record(...) so the sender can undo it
@@ -30,7 +31,7 @@ import numbers
 import time
 
 from common import models, protocol
-from server import permissions
+from server import permissions, versions
 from server.board_state import (BoardError, PROTECTED_FIELDS, STROKE_DEFAULTS,
                                 MAX_PART_POINTS, MAX_POINTS)
 from server.dispatcher import handler
@@ -149,11 +150,13 @@ def _object_id(payload):
     return (payload.get('obj') or {}).get('id')
 
 
-def _process(session, msg, action, clean, check=None):
+def _process(session, msg, action, clean, check=None, before=None):
     """Run one board operation through the pipeline described in the module docstring.
 
     action: the permission to test ('draw' or 'clear'); clean: payload checker;
-    check: optional extra check done under the lock (check(board, payload)).
+    check: optional extra check done under the lock (check(board, payload));
+    before: optional step done under the lock once every check has passed and
+    right before the operation is applied (before(room, user)).
     """
     room, user, op_type = session.room, msg['user'], msg['type']
     try:
@@ -171,6 +174,8 @@ def _process(session, msg, action, clean, check=None):
             board = room.board
             if check is not None:
                 check(board, payload)
+            if before is not None:
+                before(room, user)       # nothing can change the board between this and apply()
             env = protocol.make_msg(op_type, payload, room=room.code, user=user,
                                     op_id=op_id, seq=board.seq + 1, ts=time.time())
             prev = board.get_copy(_object_id(payload))   # state BEFORE, for undo
@@ -212,10 +217,24 @@ def on_op_delete(session, msg):
     _process(session, msg, 'draw', clean_delete)
 
 
+def _version_before_clear(room, user):
+    """Save the automatic version 'before clear' so the host can get the board back.
+
+    OP_CLEAR is not undoable (contract E6); this version is the way back. It
+    is taken under room.lock right before the clear is applied, so it holds
+    exactly the board the host was looking at.
+    """
+    versions.auto_version(room, user, versions.AUTO_NAME_CLEAR)
+
+
 @handler(protocol.OP_CLEAR)
 def on_op_clear(session, msg):
-    """OP_CLEAR {}: remove every object. Host only (permission 'clear')."""
-    _process(session, msg, 'clear', clean_clear)
+    """OP_CLEAR {}: remove every object. Host only (permission 'clear').
+
+    The permission is checked first, so a rejected clear (an editor or a
+    viewer) saves no version either.
+    """
+    _process(session, msg, 'clear', clean_clear, before=_version_before_clear)
 
 
 # ---------------------------------------------------------------- undo and redo

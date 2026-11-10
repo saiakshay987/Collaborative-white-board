@@ -14,11 +14,17 @@ import copy
 import json
 import os
 import sys
+import tempfile
 import unittest
 import zlib
 
 # Make "import server" / "import common" work when run as a plain script.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# server/versions.py autosaves every room it knows, also at exit: keep the
+# test rooms out of the real server_data/ folder. Must be set BEFORE the import.
+TEST_DATA_DIR = tempfile.mkdtemp(prefix='wb_test_')
+os.environ['WB_DATA_DIR'] = TEST_DATA_DIR
 
 from server import board_state  # noqa: E402
 from server.board_state import (BoardState, BoardError, decode_snapshot, MAX_DELTA,  # noqa: E402
@@ -544,7 +550,7 @@ class UndoTests(unittest.TestCase):
 import threading  # noqa: E402
 
 from common import models  # noqa: E402
-from server import board_ops, dispatcher, permissions, rooms, sync  # noqa: E402,F401
+from server import board_ops, dispatcher, permissions, rooms, sync, versions  # noqa: E402,F401
 
 # The real kinds_*.py registries belong to P2/P4 and may still be empty
 # stubs, so the tests bring their own tiny registry for the kinds they use.

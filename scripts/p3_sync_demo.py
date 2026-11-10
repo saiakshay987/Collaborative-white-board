@@ -23,11 +23,15 @@ import os
 import random
 import socket
 import sys
+import tempfile
 import threading
 import time
 
 # Make "import server" / "import client" work when run as a plain script.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# The demo server autosaves its rooms (server/versions.py); keep that out of the real server_data/.
+os.environ.setdefault('WB_DATA_DIR', tempfile.mkdtemp(prefix='wb_demo_'))
 
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer, pyqtSignal  # noqa: E402
 

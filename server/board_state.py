@@ -230,10 +230,21 @@ class BoardState:
     def load_snapshot(self, payload):
         """Replace the whole state with a snapshot payload. The log restarts
         empty, so deltas from before this seq are refused."""
+        self.restore(decode_snapshot(payload), payload['seq'])
+
+    def restore(self, objects, seq):
+        """Replace the whole state with a list of objects and a seq counter.
+
+        Used for a snapshot and for loading an autosave file after a server
+        restart (server/versions.py). The objects are put in z order. The log
+        restarts empty, so a client that was at an older seq gets a SNAPSHOT
+        instead of a SYNC_DELTA (delta() cannot serve it), and the next
+        accepted operation continues with seq + 1.
+        """
         self.objects.clear()
-        for obj in decode_snapshot(payload):
+        for obj in sorted(objects, key=lambda o: o.get('z', 0)):
             self.objects[obj['id']] = obj
-        self.seq = payload['seq']
+        self.seq = seq
         self.log = []
 
     def checksum(self):
