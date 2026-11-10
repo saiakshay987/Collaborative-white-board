@@ -1,5 +1,5 @@
 # OWNER: P2
-"""toolbar.py: Tool dock built from the tools registry, plus pen color/width controls.
+"""toolbar.py: Tool dock built from the tools registry, plus color/width controls with per-tool memory.
 
 Registered with registry.register_panel as the "tools" panel in the LEFT
 dock area (contract G). main_window calls the factory once while it builds
@@ -9,29 +9,40 @@ What the dock contains
 ----------------------
 Tools       One checkable button per class in registry.TOOLS, grouped by
             the tool's `group` attribute (groups in first-registration
-            order). The tooltip shows label and shortcut, e.g. "Pen (P)".
-Pen style   pen / marker / highlighter. Each style has its own opacity
-            (STYLE_ALPHA); the "Opacity" readout shows the current value.
+            order). The tooltip shows label and shortcut, e.g. "Marker (M)".
+            Pen, marker and highlighter are separate tools (pen_tool.py).
 Color       A 12-color palette plus "More..." (QColorDialog) for any color.
-Width       A slider 1-40 (contract D: stroke width 1-40) with a live
-            preview dot drawn in the current color, width and opacity.
+            Greyed out for tools with uses_color = False (the eraser).
+Width       A slider 1-40 (contract D: width 1-40) with a live preview
+            drawn exactly as the active tool will draw: the marker 1.5x
+            wider at 60 %, the highlighter at least 12 wide at 35 %. For the
+            eraser the slider is the hit RADIUS and the preview is a ring.
 
-All pen controls write the shared dict app.pen {color, width, tool, alpha}
-(contract F). draw_sync.StrokeStreamer copies app.pen when a stroke starts,
-so a change never alters a stroke already being drawn.
+All controls write the shared dict app.pen {color, width, tool, alpha}
+(contract F). The drawing tools turn app.pen into the stroke style when a
+stroke starts (PenTool.stroke_style), so a change never alters a stroke that
+is already being drawn. Shape tools read the same color and width.
+
+Per-tool memory
+---------------
+Every tool class with a `pen_defaults` dict {color, width} has its own
+remembered color and width (_memory). Changing a control saves the value
+for the active tool; selecting a tool loads its values into app.pen (the
+class defaults the first time). So pen -> highlighter -> pen gives back the
+pen's own color and width, and the eraser keeps its own radius. Tools
+without pen_defaults (select, text, image) leave app.pen as it is. The
+memory lives only in this client for this session.
 
 Choosing a tool
 ---------------
-select_tool(app, tool_id) puts one instance of that tool class in
-app.active_tool (instances are kept, so a tool keeps its own state) and
-sets the canvas cursor to tool.cursor(). The canvas forwards mouse events to
-whatever app.active_tool is.
-
-Keyboard shortcuts are NOT bound here: main_window's "Tools" toolbar
-already binds each tool's shortcut, and binding the same key twice makes Qt
-treat it as ambiguous so neither fires. Because main_window can change
-app.active_tool on its own, a light GUI-thread timer (SYNC_MS) keeps the
-checked button in step with app.active_tool.
+main_window owns the "Tools" toolbar, the tool keyboard shortcuts and
+select_tool(); binding the same keys twice would make Qt treat them as
+ambiguous. A click in the dock therefore calls app.window.select_tool(id),
+and the dock follows every change, whoever made it, through the window's
+tool_selected signal (GUI thread). Before the window exists (the dock is
+built inside its constructor) the dock sets app.active_tool itself. A light
+GUI-thread timer (SYNC_MS) is a fallback that also catches anything that
+assigns app.active_tool directly.
 
 Viewer role
 -----------
@@ -59,19 +70,14 @@ PALETTE = (
 )
 PALETTE_COLUMNS = 4
 
-# Pen styles (the stroke "tool" field, contract D) and the opacity each uses.
-# A highlighter is see-through so the drawing under it stays readable.
-STYLES = (("pen", "Pen"), ("marker", "Marker"), ("highlighter", "Highlighter"))
-STYLE_ALPHA = {"pen": 1.0, "marker": 0.8, "highlighter": 0.35}
-
-# Stroke width limits (contract D: width 1-40).
+# Width limits (contract D: width 1-40).
 WIDTH_MIN = 1
 WIDTH_MAX = 40
 
 # Tool selected when the dock is built, if it is registered.
 DEFAULT_TOOL = "pen"
 
-# How often (ms) the dock checks whether main_window's toolbar changed the tool.
+# How often (ms) the fallback timer checks app.active_tool.
 SYNC_MS = 200
 
 VIEWER_HINT = ("View only: the host made you a viewer.\n"
@@ -92,12 +98,19 @@ def _swatch_style(color, checked_border="#1565c0"):
             "QToolButton:disabled { border: 1px dashed #bbb; }" % (color, checked_border))
 
 
-class WidthPreview(QWidget):
-    """A small square that paints a dot as wide as the pen, in its color and opacity.
+def _fmt(value):
+    """Show a width without a useless '.0' (4.5 stays 4.5, 9.0 becomes 9)."""
+    value = float(value)
+    return str(int(value)) if value.is_integer() else "%.1f" % value
 
-    It shows what one dab of the pen will look like before drawing. Widths
-    larger than the widget are clipped to it; the number label next to the
-    slider gives the exact value.
+
+class WidthPreview(QWidget):
+    """A small square that shows one dab of the active tool, or the eraser's ring.
+
+    dot mode: a dot as wide as the stroke, in its color and opacity (flat
+    square for the highlighter's chisel tip). ring mode: an outline circle
+    with the eraser's radius. Sizes larger than the widget are clipped to
+    it; the label under the slider gives the exact value.
     """
 
     SIDE = 44
@@ -106,47 +119,64 @@ class WidthPreview(QWidget):
         """Create the preview with a black, 3-unit, opaque dot."""
         super().__init__(parent)
         self._color = QColor("#000000")
-        self._width = 3
+        self._width = 3.0
         self._alpha = 1.0
+        self._square = False
+        self._ring = False
         self.setFixedSize(self.SIDE, self.SIDE)
 
-    def set_pen(self, color, width, alpha):
-        """Update the dot from app.pen values and repaint."""
-        self._color = QColor(color)
-        self._width = width
-        self._alpha = alpha
+    def set_dot(self, color, width, alpha, square=False):
+        """Show a stroke dab of this color, width (diameter) and opacity."""
+        self._color, self._width, self._alpha = QColor(color), float(width), float(alpha)
+        self._square, self._ring = square, False
+        self.update()
+
+    def set_ring(self, radius):
+        """Show the eraser's hit circle of this radius."""
+        self._width, self._ring = 2.0 * float(radius), True
         self.update()
 
     def paintEvent(self, ev):
-        """Paint a light square background and a centred dot of diameter = width."""
+        """Paint a light square background, then the dot or the ring centred in it."""
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing, True)
             painter.fillRect(self.rect(), QColor("#f4f4f4"))
             painter.setPen(QPen(QColor("#c8c8c8")))
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            d = min(self._width, self.SIDE - 4.0)
+            box = QRectF((self.width() - d) / 2.0, (self.height() - d) / 2.0, d, d)
+            if self._ring:
+                painter.setPen(QPen(QColor("#333333"), 1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(box)
+                return
             color = QColor(self._color)
-            color.setAlphaF(max(0.0, min(1.0, float(self._alpha))))
+            color.setAlphaF(max(0.0, min(1.0, self._alpha)))
             # A white dot would vanish on the light background: outline it.
             painter.setPen(QPen(QColor("#999999")) if color.lightness() > 230 else Qt.NoPen)
             painter.setBrush(color)
-            d = float(min(self._width, self.SIDE - 4))
-            painter.drawEllipse(QRectF((self.width() - d) / 2.0, (self.height() - d) / 2.0, d, d))
+            if self._square:
+                painter.drawRect(box)
+            else:
+                painter.drawEllipse(box)
         finally:
             painter.end()
 
 
 class ToolDock(QWidget):
-    """The left dock: tool buttons by group, pen style, color palette and width."""
+    """The left dock: tool buttons by group, color palette and width, remembered per tool."""
 
     def __init__(self, app, parent=None):
         """Build every section from registry.TOOLS and app.pen, then select the default tool."""
         super().__init__(parent)
         self.app = app
-        self._instances = {}          # tool id -> tool instance (kept between switches)
+        self._instances = {}          # tool id -> instance (only used before the window exists)
         self._tool_buttons = {}       # tool id -> QToolButton
+        self._current_id = None       # tool whose settings the controls show
         self._last_tool_id = None     # tool to restore when a viewer becomes editor again
-        self._custom_color = None     # color chosen with "More..." that is not in PALETTE
+        self._memory = {}             # tool id -> {"color", "width"} last used with that tool
+        self._window = None           # MainWindow whose tool_selected we follow
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -165,8 +195,6 @@ class ToolDock(QWidget):
         layout.addWidget(self._pen_box)
         layout.addStretch(1)
 
-        self._show_pen(self.app.pen)
-
         # Role changes come from on_message handlers on the GUI thread.
         app.role_changed.connect(self._apply_role)
 
@@ -174,10 +202,14 @@ class ToolDock(QWidget):
         first = DEFAULT_TOOL if DEFAULT_TOOL in registry.TOOLS else next(iter(registry.TOOLS), None)
         if first is not None:
             self.select_tool(first)
+        else:
+            self._show_pen()
         self._apply_role()
 
-        # Keep the checked button in step when main_window's toolbar or a
-        # shortcut changes app.active_tool. Runs on the GUI thread; cheap.
+        # app.window is assigned only after MainWindow's constructor returns,
+        # so connect to its tool_selected signal from the event loop.
+        QTimer.singleShot(0, self._connect_window)
+        # Fallback: follow app.active_tool however it was changed. GUI thread; cheap.
         self._sync_timer = QTimer(self)
         self._sync_timer.timeout.connect(self._sync_from_app)
         self._sync_timer.start(SYNC_MS)
@@ -216,22 +248,50 @@ class ToolDock(QWidget):
             outer.addWidget(gbox)
         return box
 
-    def select_tool(self, tool_id):
-        """Make tool_id the active tool: app.active_tool, app.pen['tool'] stays, cursor updated.
+    def _connect_window(self):
+        """Follow MainWindow.tool_selected once app.window exists (called again by the timer)."""
+        window = getattr(self.app, "window", None)
+        if window is None or window is self._window or not hasattr(window, "tool_selected"):
+            return
+        self._window = window
+        window.tool_selected.connect(self._on_tool_changed)
 
-        One instance per tool id is kept so a tool's own state (e.g. the
-        pen's StrokeStreamer) is not rebuilt on every switch.
+    def select_tool(self, tool_id):
+        """Make tool_id the active tool and load its remembered color and width.
+
+        Through main_window.select_tool when the window exists (it checks
+        its toolbar action and emits tool_selected); before that, the dock
+        keeps one instance per tool id itself.
         """
         cls = registry.TOOLS.get(tool_id)
         if cls is None:
             return
-        tool = self._instances.get(tool_id)
-        if tool is None:
-            tool = self._instances[tool_id] = cls()
-        self.app.active_tool = tool
+        window = getattr(self.app, "window", None)
+        if window is not None and hasattr(window, "select_tool"):
+            window.select_tool(tool_id)
+        else:
+            tool = self._instances.get(tool_id)
+            if tool is None:
+                tool = self._instances[tool_id] = cls()
+            self.app.active_tool = tool
+        self._on_tool_changed(tool_id)   # no-op if tool_selected already did it
+
+    def _on_tool_changed(self, tool_id):
+        """The active tool is now tool_id: check its button, set the cursor, load its settings.
+
+        Connected to MainWindow.tool_selected, so it runs on the GUI thread
+        right when a shortcut or the main toolbar switches tools, before the
+        user can start a stroke with the old color.
+        """
+        if tool_id not in registry.TOOLS:
+            return
         self._last_tool_id = tool_id
         self._check_button(tool_id)
-        self._set_canvas_cursor(tool)
+        self._set_canvas_cursor(getattr(self.app, "active_tool", None))
+        if tool_id == self._current_id:
+            return
+        self._current_id = tool_id
+        self._load_tool_settings(tool_id)
 
     def _check_button(self, tool_id):
         """Check the button of tool_id without emitting clicked (no feedback loop)."""
@@ -256,49 +316,54 @@ class ToolDock(QWidget):
             canvas.setCursor(shape if shape is not None else Qt.CrossCursor)
 
     def _sync_from_app(self):
-        """If something else changed app.active_tool, check the matching button.
-
-        main_window's toolbar makes a fresh instance of the class, so we
-        adopt that instance as the one kept for its id.
-        """
+        """Fallback timer: connect to the window, and follow an app.active_tool we missed."""
+        self._connect_window()
         tool = getattr(self.app, "active_tool", None)
-        if tool is None:
-            return
         tool_id = getattr(tool, "id", None)
-        if tool_id in self._tool_buttons and self._instances.get(tool_id) is not tool:
-            self._instances[tool_id] = tool
-            self._last_tool_id = tool_id
-            self._check_button(tool_id)
+        if tool_id is not None and tool_id != self._current_id:
+            self._on_tool_changed(tool_id)
+
+    # ---------------------------------------------------------- per-tool memory
+    def _current_cls(self):
+        """Class of the tool the controls belong to, or None."""
+        return registry.TOOLS.get(self._current_id)
+
+    def _load_tool_settings(self, tool_id):
+        """Put tool_id's remembered (or default) color and width into app.pen.
+
+        For a drawing tool also set app.pen's tool and alpha (contract F
+        fields) to its stroke type and opacity. A tool without pen_defaults
+        does not use the pen, so app.pen is left as it is.
+        """
+        cls = registry.TOOLS.get(tool_id)
+        defaults = getattr(cls, "pen_defaults", None)
+        if defaults is not None:
+            saved = self._memory.get(tool_id) or defaults
+            self.app.pen["color"] = QColor(saved.get("color", "#000000")).name()
+            self.app.pen["width"] = max(WIDTH_MIN, min(WIDTH_MAX, int(saved.get("width", 3))))
+            if getattr(cls, "stroke_tool", None):
+                self.app.pen["tool"] = cls.stroke_tool
+                self.app.pen["alpha"] = float(getattr(cls, "alpha", 1.0))
+        self._show_pen()
+
+    def _remember(self):
+        """Save app.pen's color and width as the active tool's own settings."""
+        if getattr(self._current_cls(), "pen_defaults", None) is not None:
+            self._memory[self._current_id] = {"color": self.app.pen.get("color"),
+                                              "width": self.app.pen.get("width")}
 
     # ------------------------------------------------------------ pen controls
     def _build_pen_controls(self):
-        """Pen style buttons, opacity readout, color palette with 'More...' and width slider."""
+        """Color palette with 'More...', width slider, its readout and the live preview."""
         box = QGroupBox("Pen")
         v = QVBoxLayout(box)
         v.setSpacing(6)
 
-        # Style: pen / marker / highlighter (exclusive).
-        style_row = QHBoxLayout()
-        self._style_group = QButtonGroup(self)
-        self._style_group.setExclusive(True)
-        self._style_buttons = {}
-        for style_id, text in STYLES:
-            btn = QToolButton()
-            btn.setText(text)
-            btn.setCheckable(True)
-            btn.setToolTip("%s, opacity %d%%" % (text, round(STYLE_ALPHA[style_id] * 100)))
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.clicked.connect(lambda _checked, s=style_id: self._set_style(s))
-            self._style_group.addButton(btn)
-            self._style_buttons[style_id] = btn
-            style_row.addWidget(btn)
-        v.addLayout(style_row)
-
-        self._opacity_label = QLabel()
-        v.addWidget(self._opacity_label)
-
         # Color palette: 12 swatches in a grid, plus "More..." for any color.
-        v.addWidget(QLabel("Color"))
+        self._color_box = QWidget()
+        cv = QVBoxLayout(self._color_box)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(QLabel("Color"))
         grid = QGridLayout()
         grid.setSpacing(4)
         self._swatch_group = QButtonGroup(self)
@@ -315,7 +380,7 @@ class ToolDock(QWidget):
             self._swatches[color] = sw
             grid.addWidget(sw, i // PALETTE_COLUMNS, i % PALETTE_COLUMNS)
         grid.setColumnStretch(PALETTE_COLUMNS, 1)   # keep the swatches packed to the left
-        v.addLayout(grid)
+        cv.addLayout(grid)
 
         more_row = QHBoxLayout()
         self._current_swatch = QLabel()
@@ -327,14 +392,15 @@ class ToolDock(QWidget):
         more.clicked.connect(self._pick_color)
         more_row.addWidget(self._current_swatch)
         more_row.addWidget(more, 1)
-        v.addLayout(more_row)
+        cv.addLayout(more_row)
+        v.addWidget(self._color_box)
 
-        # Width: slider 1-40, number and a live preview dot.
-        v.addWidget(QLabel("Width"))
+        # Width: slider 1-40, number and a live preview.
+        self._width_title = QLabel("Width")
+        v.addWidget(self._width_title)
         width_row = QHBoxLayout()
         self._width_slider = QSlider(Qt.Horizontal)
         self._width_slider.setRange(WIDTH_MIN, WIDTH_MAX)
-        self._width_slider.setToolTip("Stroke width (%d-%d)" % (WIDTH_MIN, WIDTH_MAX))
         self._width_slider.valueChanged.connect(self._set_width)
         self._width_label = QLabel()
         self._width_label.setMinimumWidth(22)
@@ -343,21 +409,22 @@ class ToolDock(QWidget):
         width_row.addWidget(self._width_label)
         width_row.addWidget(self._preview)
         v.addLayout(width_row)
+
+        # What the tool will really draw (marker wider, highlighter see-through...).
+        self._info_label = QLabel()
+        self._info_label.setWordWrap(True)
+        self._info_label.setStyleSheet("QLabel { color: #555; }")
+        v.addWidget(self._info_label)
         return box
 
-    def _set_style(self, style_id):
-        """Write the pen style and its opacity into app.pen."""
-        self.app.pen["tool"] = style_id
-        self.app.pen["alpha"] = STYLE_ALPHA.get(style_id, 1.0)
-        self._show_pen(self.app.pen)
-
     def _set_color(self, color):
-        """Write a '#rrggbb' color into app.pen."""
+        """Write a '#rrggbb' color into app.pen and remember it for the active tool."""
         self.app.pen["color"] = QColor(color).name()   # normalised lower-case #rrggbb
-        self._show_pen(self.app.pen)
+        self._remember()
+        self._show_pen()
 
     def _pick_color(self):
-        """Open QColorDialog for any color (no alpha: opacity comes from the pen style).
+        """Open QColorDialog for any color (no alpha: opacity comes from the tool).
 
         The dialog is modal but runs Qt's event loop, so network messages
         keep arriving and the board keeps repainting while it is open.
@@ -368,21 +435,23 @@ class ToolDock(QWidget):
             self._set_color(color.name())
 
     def _set_width(self, value):
-        """Write the slider value (clamped to 1-40) into app.pen['width']."""
+        """Write the slider value (clamped to 1-40) into app.pen['width'] and remember it."""
         self.app.pen["width"] = max(WIDTH_MIN, min(WIDTH_MAX, int(value)))
-        self._show_pen(self.app.pen)
+        self._remember()
+        self._show_pen()
 
-    def _show_pen(self, pen):
-        """Make every pen control show the values in pen (app.pen) without writing back."""
+    def _show_pen(self):
+        """Make every control show app.pen for the active tool, without writing back."""
+        pen = self.app.pen
+        cls = self._current_cls()
+        label = getattr(cls, "label", None) or "Pen"
         color = QColor(pen.get("color", "#000000")).name()
         width = int(pen.get("width", 3))
-        style = pen.get("tool", "pen")
-        alpha = float(pen.get("alpha", STYLE_ALPHA.get(style, 1.0)))
+        is_eraser = cls is not None and getattr(cls, "pen_defaults", None) is not None \
+            and not getattr(cls, "uses_color", True)
 
-        btn = self._style_buttons.get(style)
-        if btn is not None and not btn.isChecked():
-            btn.setChecked(True)
-        self._opacity_label.setText("Opacity: %d%%" % round(alpha * 100))
+        self._pen_box.setTitle("%s settings" % label)
+        self._color_box.setEnabled(not is_eraser)
 
         # Check the matching swatch, or none when the color came from "More...".
         sw = self._swatches.get(color)
@@ -404,7 +473,27 @@ class ToolDock(QWidget):
             self._width_slider.setValue(width)
             self._width_slider.blockSignals(False)
         self._width_label.setText(str(width))
-        self._preview.set_pen(color, width, alpha)
+
+        style_fn = getattr(cls, "stroke_style", None)
+        if is_eraser:
+            self._width_title.setText("Eraser radius")
+            self._width_slider.setToolTip("Hit radius in board units (%d-%d)" % (WIDTH_MIN, WIDTH_MAX))
+            self._info_label.setText("Erases every object within %d units of the circle's centre."
+                                     % width)
+            self._preview.set_ring(width)
+        elif style_fn is not None:
+            style = style_fn(pen)
+            self._width_title.setText("Width")
+            self._width_slider.setToolTip("Width (%d-%d)" % (WIDTH_MIN, WIDTH_MAX))
+            self._info_label.setText("Draws %s wide at %d%% opacity."
+                                     % (_fmt(style["width"]), round(style["alpha"] * 100)))
+            self._preview.set_dot(style["color"], style["width"], style["alpha"],
+                                  square=getattr(cls, "flat_cap", False))
+        else:
+            self._width_title.setText("Width")
+            self._width_slider.setToolTip("Width (%d-%d)" % (WIDTH_MIN, WIDTH_MAX))
+            self._info_label.setText("Color and width for shapes and lines.")
+            self._preview.set_dot(color, width, 1.0)
 
     # ------------------------------------------------------------------ role
     def _apply_role(self):

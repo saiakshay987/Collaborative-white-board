@@ -15,7 +15,7 @@ in common/kinds_draw.py, so a half-built stroke still paints.
 import math
 
 from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt5.QtGui import QBrush, QColor, QPaintEngine, QPainter, QPainterPath, QPen, QPolygonF
 
 from client import registry
 from common import kinds_draw
@@ -61,13 +61,33 @@ def _smooth_path(points):
     return path
 
 
+def _multiply_under_ink(painter):
+    """Switch painter to the Multiply blend if its paint engine supports it.
+
+    Multiply darkens only: result = highlighter color x what is below. Ink
+    already on the page (black, dark blue...) stays as dark as before, while
+    white paper turns the highlighter's color. So the highlighter looks as if
+    it were UNDER the ink, without changing the z order that the server set
+    (seq order is the truth for every client, contract E1). The screen and
+    QImage exports (raster engine) support it; a PDF writer does not, and
+    there the highlighter is simply drawn normally at its alpha.
+    render.render_board restores the painter afterwards, so the mode never
+    leaks into the next object.
+    """
+    engine = painter.paintEngine()
+    if engine is not None and engine.hasFeature(QPaintEngine.BlendModes):
+        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+
+
 def render_stroke(painter, obj, ctx):
     """Paint a freehand stroke (pen, marker or highlighter).
 
-    pen and marker: round caps and joins. highlighter: flat cap, so it
-    looks like a chisel-tip highlighter. The object's alpha goes into the
-    pen color. The whole stroke is ONE path, so a translucent stroke does
-    not get darker where it overlaps itself.
+    pen: solid, round caps and joins. marker: the same look at its own
+    alpha (the tool already made it 1.5x wider). highlighter: flat cap and
+    bevel joins, so it looks like a chisel tip, blended with Multiply so the
+    ink beneath stays dark (see _multiply_under_ink). The object's alpha
+    goes into the pen color. The whole stroke is ONE path, so a translucent
+    stroke does not get darker where it overlaps itself.
     """
     points = obj.get("points") or []
     if not points:
@@ -75,6 +95,7 @@ def render_stroke(painter, obj, ctx):
     painter.setRenderHint(QPainter.Antialiasing, True)
     if kinds_draw.get(obj, "tool") == "highlighter":
         pen = _pen(obj, cap=Qt.FlatCap, join=Qt.BevelJoin, alpha=kinds_draw.get(obj, "alpha"))
+        _multiply_under_ink(painter)
     else:
         pen = _pen(obj, alpha=kinds_draw.get(obj, "alpha"))
     if len(points) == 1:
