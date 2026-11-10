@@ -20,8 +20,8 @@ connection only marks the seat offline (reason "timeout") so the user can
 resume it with the token within config.REJOIN_WINDOW_S.
 
 Heartbeat and liveness (contract C1, E4, E5) live here too, see below,
-and so does the STATS broadcast (latency and traffic, every 2 s).
-CURSOR and KICK come in a later P1 task.
+and so does the STATS broadcast (latency and traffic, every 2 s) and the
+CURSOR relay (live cursors, see below). KICK comes in a later P1 task.
 """
 
 # =============================================================================
@@ -63,12 +63,13 @@ CURSOR and KICK come in a later P1 task.
 # RST is ever sent, so recv() on both ends would just block "forever".
 # =============================================================================
 
+import math
 import threading
 import time
 import traceback
 
 from common import config, framing, protocol
-from server import rooms
+from server import permissions, rooms
 from server.dispatcher import handler
 
 # How often the heartbeat thread wakes up (seconds). Each tick checks for
@@ -252,6 +253,91 @@ def on_pong(session, msg):
         samples = session.rtt_samples
         samples.append(rtt * 1000.0)
         session.rtt_ms = round(sum(samples) / len(samples), 1)
+
+
+# --- CURSOR (live cursors) ---------------------------------------------------
+#
+# CURSOR {x, y} is the cheapest message in the protocol and also the most
+# frequent one: it is pure presence, NOT board state. So, unlike board ops:
+#   * it is not stored, not logged and gets no seq (a late joiner does not
+#     need old mouse positions; the next move refreshes them),
+#   * it is relayed to everyone EXCEPT the sender (the sender already sees
+#     its own mouse pointer), with user = the authenticated sender name,
+#   * it changes no room state, so room.lock is not taken here; broadcast()
+#     copies the online member list under the lock by itself.
+# The client sends at most CURSOR_RATE per second (client/cursor_overlay.py).
+# Never trust the client: the server enforces that limit too, with a token
+# bucket per connection, so a hacked client cannot flood the room.
+
+# Contract C1: "Max 20 per second per client".
+CURSOR_RATE = 20.0
+
+# Token-bucket size: how many CURSOR frames may arrive back to back. A
+# small burst absorbs normal network jitter (two frames 50 ms apart can
+# arrive 10 ms apart after a Wi-Fi hiccup) without loosening the average.
+CURSOR_BURST = 5.0
+
+
+def _cursor_allowed(session, now):
+    """Token bucket: return True if this CURSOR frame is within the rate limit.
+
+    The bucket holds up to CURSOR_BURST tokens and refills at CURSOR_RATE
+    tokens per second; every relayed frame costs one token. On average a
+    client can therefore never exceed CURSOR_RATE frames per second. Only
+    this client's reader thread calls this, so the two attributes kept on
+    the session need no lock.
+    """
+    tokens = getattr(session, "cursor_tokens", CURSOR_BURST)
+    last = getattr(session, "cursor_last", now)
+    tokens = min(CURSOR_BURST, tokens + (now - last) * CURSOR_RATE)
+    session.cursor_last = now
+    if tokens < 1.0:
+        session.cursor_tokens = tokens
+        return False
+    session.cursor_tokens = tokens - 1.0
+    return True
+
+
+def _board_coord(value, limit):
+    """Return value as a board coordinate (0..limit, one decimal), or None.
+
+    Rejects bools, non-numbers, NaN and infinity (json allows NaN), and
+    clamps the rest onto the board (contract D: at most one decimal).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return round(min(max(float(value), 0.0), float(limit)), 1)
+
+
+@handler(protocol.CURSOR)
+def on_cursor(session, msg):
+    """CURSOR {x, y}: relay the sender's mouse position to the rest of the room.
+
+    Steps (in this order, so a refused frame costs as little as possible):
+      1. permissions.can(role, "cursor"), else ERROR FORBIDDEN.
+      2. Rate limit (token bucket): frames above CURSOR_RATE are silently
+         dropped. No ERROR, because an answer per dropped frame would add
+         traffic instead of saving it; the client's next frame repairs it.
+      3. x and y must be numbers, else ERROR BAD_FORMAT; they are clamped
+         to the board and rounded to one decimal.
+      4. Rebuild a payload with ONLY x and y (extra fields from the client
+         are not forwarded) and broadcast it to the others with
+         user = sender. No seq, no log, no print (it would flood the
+         console 20 times a second per user).
+    """
+    room, member = session.room, session.member
+    if not permissions.can(member.role, "cursor"):
+        session.send_error(protocol.FORBIDDEN, "your role may not share a cursor", protocol.CURSOR)
+        return
+    if not _cursor_allowed(session, time.time()):
+        return
+    p = msg["payload"]
+    x = _board_coord(p.get("x"), config.BOARD_W)
+    y = _board_coord(p.get("y"), config.BOARD_H)
+    if x is None or y is None:
+        session.send_error(protocol.BAD_FORMAT, "CURSOR needs numbers x and y", protocol.CURSOR)
+        return
+    room.broadcast(protocol.CURSOR, {"x": x, "y": y}, exclude=member.name, user=member.name)
 
 
 # --- STATS -------------------------------------------------------------------
