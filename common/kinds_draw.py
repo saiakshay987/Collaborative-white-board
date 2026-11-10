@@ -30,8 +30,9 @@ TOOLS = ("pen", "marker", "highlighter")
 NUMBER = (int, float)     # JSON does not distinguish 1 from 1.0
 NONE_OR_STR = (type(None), str)
 
-# Style fields shared by every draw kind (all optional, with defaults).
-_STYLE_REQUIRED = {"color": str, "width": NUMBER}
+# Style fields shared by every draw kind: their types, and their defaults
+# (all of them are optional in an object).
+_STYLE_TYPES = {"color": str, "width": NUMBER}
 _STYLE_DEFAULTS = {"color": "#000000", "width": 3}
 
 # --- The KINDS registry (contract section D) ---------------------------------
@@ -40,25 +41,25 @@ _STYLE_DEFAULTS = {"color": "#000000", "width": 3}
 
 KINDS = {
     "stroke": {
-        "required": {"points": list, "tool": str, "alpha": NUMBER, **_STYLE_REQUIRED},
+        "required": {"points": list, "tool": str, "alpha": NUMBER, **_STYLE_TYPES},
         "defaults": {"tool": "pen", "alpha": 1.0, **_STYLE_DEFAULTS},
     },
     "line": {
-        "required": {"x1": NUMBER, "y1": NUMBER, "x2": NUMBER, "y2": NUMBER, **_STYLE_REQUIRED},
+        "required": {"x1": NUMBER, "y1": NUMBER, "x2": NUMBER, "y2": NUMBER, **_STYLE_TYPES},
         "defaults": dict(_STYLE_DEFAULTS),
     },
     "arrow": {
-        "required": {"x1": NUMBER, "y1": NUMBER, "x2": NUMBER, "y2": NUMBER, **_STYLE_REQUIRED},
+        "required": {"x1": NUMBER, "y1": NUMBER, "x2": NUMBER, "y2": NUMBER, **_STYLE_TYPES},
         "defaults": dict(_STYLE_DEFAULTS),
     },
     "rect": {
         "required": {"x": NUMBER, "y": NUMBER, "w": NUMBER, "h": NUMBER,
-                     "fill": NONE_OR_STR, **_STYLE_REQUIRED},
+                     "fill": NONE_OR_STR, **_STYLE_TYPES},
         "defaults": {"fill": None, **_STYLE_DEFAULTS},
     },
     "ellipse": {
         "required": {"x": NUMBER, "y": NUMBER, "w": NUMBER, "h": NUMBER,
-                     "fill": NONE_OR_STR, **_STYLE_REQUIRED},
+                     "fill": NONE_OR_STR, **_STYLE_TYPES},
         "defaults": {"fill": None, **_STYLE_DEFAULTS},
     },
 }

@@ -98,7 +98,7 @@ def _swatch_style(color, checked_border="#1565c0"):
             "QToolButton:disabled { border: 1px dashed #bbb; }" % (color, checked_border))
 
 
-def _fmt(value):
+def _fmt_width(value):
     """Show a width without a useless '.0' (4.5 stays 4.5, 9.0 becomes 9)."""
     value = float(value)
     return str(int(value)) if value.is_integer() else "%.1f" % value
@@ -486,7 +486,7 @@ class ToolDock(QWidget):
             self._width_title.setText("Width")
             self._width_slider.setToolTip("Width (%d-%d)" % (WIDTH_MIN, WIDTH_MAX))
             self._info_label.setText("Draws %s wide at %d%% opacity."
-                                     % (_fmt(style["width"]), round(style["alpha"] * 100)))
+                                     % (_fmt_width(style["width"]), round(style["alpha"] * 100)))
             self._preview.set_dot(style["color"], style["width"], style["alpha"],
                                   square=getattr(cls, "flat_cap", False))
         else:
