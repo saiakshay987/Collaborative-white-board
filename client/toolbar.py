@@ -517,9 +517,36 @@ class ToolDock(QWidget):
             self.select_tool(self._last_tool_id)
 
 
+# The dock built by make_tool_dock (main_window builds it once), so other P2
+# code (the command bar in shortcuts.py) can change the pen through it.
+_dock = None
+
+
 def make_tool_dock(app):
     """Panel factory for register_panel: build the ToolDock for AppState app."""
-    return ToolDock(app)
+    global _dock
+    _dock = ToolDock(app)
+    return _dock
+
+
+def set_pen(app, color=None, width=None):
+    """Set the pen color ('#rrggbb') and/or width (1-40) as if chosen in the dock.
+
+    Used by the command bar ('color #ff0000', 'width 5'). Going through the
+    dock keeps its swatches, slider and per-tool memory in step. Without a
+    dock (tests) app.pen is written directly. GUI thread only.
+    """
+    dock = _dock
+    if dock is not None and dock.app is app:
+        if color is not None:
+            dock._set_color(color)
+        if width is not None:
+            dock._set_width(width)
+        return
+    if color is not None:
+        app.pen["color"] = QColor(color).name()
+    if width is not None:
+        app.pen["width"] = max(WIDTH_MIN, min(WIDTH_MAX, int(width)))
 
 
 registry.register_panel("tools", make_tool_dock, area="left", title="Tools")

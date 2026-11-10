@@ -139,6 +139,22 @@ class PenTool:
         if self._streamer is not None and self._streamer.active:
             self._streamer.end(p)
 
+    def cancel(self, canvas):
+        """Escape (canvas.cancel_tool): throw away the stroke being drawn.
+
+        Its first parts are already on every client (they were streamed),
+        so the stroke is closed with done:true and then removed with one
+        OP_DELETE, both through send_op like any other board change.
+        """
+        streamer = self._streamer
+        if streamer is None or not streamer.active:
+            return
+        obj_id = streamer.obj_id
+        streamer.end()
+        board = canvas.app.board
+        if board is None or obj_id in board.objects:
+            ops.send_op(canvas.app, protocol.OP_DELETE, {"obj_id": obj_id})
+
     def cursor(self):
         """Crosshair: the exact point being drawn is visible."""
         return Qt.CrossCursor
@@ -408,6 +424,12 @@ class EraserTool:
         self._last = None
         self._sent = set()
         EraserPreview.for_canvas(canvas).show_at(p, pressed=False)
+
+    def cancel(self, canvas):
+        """Escape: stop erasing at once (objects already deleted stay deleted; Ctrl+Z restores them)."""
+        self._down = False
+        self._last = None
+        self._sent = set()
 
     def _erase_at(self, canvas, x, y):
         """Delete every object the circle at (x, y) touches, at most once per object per drag.

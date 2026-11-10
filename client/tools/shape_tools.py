@@ -34,6 +34,10 @@ sees it (canvas.snap), and the Shift rules only use max/abs of grid
 multiples, so a constrained shape is still on the grid. The server
 therefore only ever stores snapped values (contract D).
 
+Escape (canvas.cancel_tool -> cancel()) drops the rubber band; nothing is
+sent. The command bar (shortcuts.py) builds shapes with the same build()
+and sends them with send_shape(), so typed and dragged shapes are identical.
+
 Every coordinate is rounded to one decimal (contract D). Color and width come
 from app.pen (the tool dock, with per-tool memory through pen_defaults);
 rect and ellipse are sent with fill null (outline only).
@@ -76,6 +80,21 @@ def constrain_line(start, end):
         return QPointF(start.x(), end.y())
     d = max(abs(dx), abs(dy))                                # diagonal
     return QPointF(start.x() + math.copysign(d, dx), start.y() + math.copysign(d, dy))
+
+
+def send_shape(app, obj):
+    """Give obj an id, validate it like the server does and send ONE OP_ADD {obj}.
+
+    Returns (ok, reason). The object id is "<user>-<n>", made like an
+    op_id (contract D). Nothing is sent when validation fails, so the
+    server never has to answer an ERROR for a shape we already know is bad.
+    """
+    obj["id"] = protocol.new_op_id(app.me.username or "me")
+    ok, reason = kinds_draw.validate(obj)     # same check the server runs
+    if not ok:
+        return False, reason
+    ops.send_op(app, protocol.OP_ADD, {"obj": obj})
+    return True, None
 
 
 def constrain_box(start, end):
@@ -149,14 +168,13 @@ class _ShapeTool:
         if click:
             return
         app = canvas.app
-        obj = self.build(app, start, end)
-        # The object id is "<user>-<n>", made like an op_id (contract D).
-        obj["id"] = protocol.new_op_id(app.me.username or "me")
-        ok, reason = kinds_draw.validate(obj)    # same check the server runs
+        ok, reason = send_shape(app, self.build(app, start, end))
         if not ok:
             app.toast("Shape not sent: %s" % reason)
-            return
-        ops.send_op(app, protocol.OP_ADD, {"obj": obj})
+
+    def cancel(self, canvas):
+        """Escape: forget the shape being dragged. Nothing was sent, so nothing is undone."""
+        self._start = self._end = None
 
     def paint_overlay(self, painter, canvas):
         """Rubber-band preview (local only): draw the shape being dragged with its real renderer.

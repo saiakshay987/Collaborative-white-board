@@ -109,12 +109,17 @@ class CanvasWidget(QWidget):
         offset                  QPointF, screen position of the board origin
         screen_to_board(pt)     QPointF in board units for a screen point
         board_to_screen(pt)     QPointF in screen pixels for a board point
-        snap(pt)                pt snapped to config.GRID when snapping is on
+        snap(pt)                pt snapped to the grid when snapping is on
         cursor_moved(x, y)      signal, board units, on every mouse move
 
     Local view options (not shared with other users):
-        show_grid / set_show_grid(on)       draw the grid every config.GRID units
+        show_grid / set_show_grid(on)       draw the grid every grid_size units
         snap_enabled / set_snapping(on)     snap tool points to the grid
+        grid_size / set_grid_size(n)        grid spacing, config.GRID (20) by default
+
+    Tool control (used by shortcuts.py):
+        is_drawing()            True while a tool got a press and awaits the release
+        cancel_tool()           Escape: abort the active tool's current drawing
     """
 
     cursor_moved = pyqtSignal(float, float)
@@ -131,6 +136,11 @@ class CanvasWidget(QWidget):
         # so they start in the same state: off, so freehand ink is not snapped.
         self.show_grid = False
         self.snap_enabled = False
+        # Grid spacing in board units. The contract default is config.GRID;
+        # the command bar ('grid n') may change it for this client only.
+        # Snapping still happens here, before sending, so the server simply
+        # stores whatever snapped values arrive (contract D).
+        self.grid_size = float(config.GRID)
         self._snap_label = None      # "Snap on/off" label in the window's status bar
 
         self._pan_last = None        # last screen pos while panning, else None
@@ -187,7 +197,7 @@ class CanvasWidget(QWidget):
                        pt.y() * self.zoom + self.offset.y())
 
     def snap(self, pt):
-        """Return pt (board units) snapped to the nearest config.GRID point when snapping is on.
+        """Return pt (board units) snapped to the nearest grid point when snapping is on.
 
         Snapping happens on the client before sending (contract D), so the
         server stores the snapped values. With snapping off pt is returned
@@ -195,7 +205,7 @@ class CanvasWidget(QWidget):
         """
         if not self.snap_enabled:
             return QPointF(pt)
-        g = float(config.GRID)
+        g = self.grid_size
         return QPointF(round(pt.x() / g) * g, round(pt.y() / g) * g)
 
     def visible_board_rect(self):
@@ -240,6 +250,11 @@ class CanvasWidget(QWidget):
     def set_show_grid(self, on):
         """Show or hide the grid (local view option)."""
         self.show_grid = bool(on)
+        self.update()
+
+    def set_grid_size(self, size):
+        """Set the grid spacing in board units (local view option) and repaint."""
+        self.grid_size = float(size)
         self.update()
 
     def set_snapping(self, on):
@@ -331,14 +346,14 @@ class CanvasWidget(QWidget):
             painter.restore()
 
     def _paint_grid(self, painter, area):
-        """Draw grid lines every config.GRID units, only inside area (board units).
+        """Draw grid lines every grid_size units, only inside area (board units).
 
         When zoomed out so far that lines would be under MIN_GRID_PX apart,
         only every n-th line is drawn so the page stays readable and fast.
         """
         if area.isEmpty():
             return
-        step = float(config.GRID)
+        step = self.grid_size
         while step * self.zoom < MIN_GRID_PX:
             step *= 5
         pen = QPen(GRID_COLOR)
@@ -373,6 +388,32 @@ class CanvasWidget(QWidget):
             if rect is None or rect.intersects(visible):
                 out.append(obj)
         return out
+
+    # ----------------------------------------------------------- tool control
+    def is_drawing(self):
+        """True between a tool's on_press and its on_release (a drag is in progress)."""
+        return self._tool_pressed
+
+    def cancel_tool(self):
+        """Abort the active tool's current drawing (Escape, see shortcuts.py).
+
+        A tool opts in by defining cancel(canvas); it then drops its
+        unfinished shape, stroke or drag. The pending release is forgotten
+        too, so letting go of the mouse afterwards does nothing. A tool
+        without cancel() is left alone (its own press/release pair stays
+        intact). Returns True if a tool was cancelled.
+        """
+        tool = getattr(self.app, "active_tool", None)
+        fn = getattr(tool, "cancel", None) if tool is not None else None
+        if fn is None:
+            return False
+        self._tool_pressed = False
+        try:
+            fn(self)
+        except Exception:  # noqa: BLE001  (same rule as _call_tool)
+            traceback.print_exc()
+        self.update()
+        return True
 
     # ------------------------------------------------------------ mouse input
     def _event_point(self, ev):
