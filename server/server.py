@@ -131,6 +131,33 @@ class ClientHandler(threading.Thread):
         except OSError:
             pass
 
+    def close_after_flush(self, grace_s):
+        """Close the connection gracefully: our last frames first, then FIN.
+
+        Used by KICK (presence.py), where the client MUST read the final
+        USER_LEFT {reason: "kicked"} before the connection ends.
+
+        Why not plain close()? If the client's frames (a PONG, a CURSOR)
+        are still unread in OUR receive buffer when we close(), the kernel
+        answers with a RST instead of a FIN, and on a RST the client's
+        kernel may throw away data it has not read yet (Windows always
+        does), so the client could miss the USER_LEFT and think the
+        connection just dropped, and auto-reconnect.
+
+        So we only shutdown(SHUT_WR): the kernel sends everything already
+        queued, then a FIN. The client reads USER_LEFT, then sees EOF and
+        closes its side; our reader thread then gets EOF and does the
+        normal cleanup. A client that never closes (hacked or frozen) is
+        cut off hard by a timer after grace_s seconds.
+        """
+        try:
+            self.sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass  # already disconnected
+        timer = threading.Timer(grace_s, self.close)
+        timer.daemon = True
+        timer.start()
+
     # -- reader thread -------------------------------------------------------
 
     def run(self):

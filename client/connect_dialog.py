@@ -73,8 +73,12 @@ def lan_ip():
 class ConnectDialog(QDialog):
     """Host-or-join dialog. exec_() returns Accepted once we are in a room."""
 
-    def __init__(self, app, parent=None):
-        """Build the tabs for AppState app (app.net must be a NetClient)."""
+    def __init__(self, app, parent=None, notice=None):
+        """Build the tabs for AppState app (app.net must be a NetClient).
+
+        notice: optional text shown in red under the form when the dialog
+        opens, e.g. why we are back here after being kicked.
+        """
         super().__init__(parent)
         self.app = app
         self.net = app.net
@@ -90,6 +94,9 @@ class ConnectDialog(QDialog):
 
         self.net.connected.connect(self._on_connected)
         self.net.disconnected.connect(self._on_disconnected)
+        if notice:
+            self._show_error(notice)
+            self.tabs.setCurrentIndex(1)    # a removed user would join, not host
 
     # ----------------------------------------------------------------- layout
 

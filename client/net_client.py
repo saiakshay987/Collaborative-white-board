@@ -33,6 +33,13 @@ success it sends JOIN_ROOM {room, username, password, token, last_seq}; the
 server resumes our seat and answers JOIN_OK plus SYNC_DELTA or SNAPSHOT.
 Then `reconnected` is emitted. If 60 s pass, `disconnected(reason)`.
 
+Kicked (KICK, contract C1): the server first sends us USER_LEFT about
+OURSELVES with reason "kicked", then closes the connection. The USER_LEFT
+handler below calls kicked_out(): the token is forgotten and the link is
+dropped BEFORE the receiver thread reports the closed socket, so _on_lost
+ignores it and no reconnect starts. `kicked` stays True until the next
+connect_to(), so the GUI can tell a kick apart from other disconnects.
+
 Also here: the JOIN_OK and USER_LIST handlers that keep app.me and app.users
 up to date.
 
@@ -42,6 +49,7 @@ Public API (contract F):
     send(type, payload, op_id=None) -> bool
     disconnect()                  sends LEAVE if in a room, closes, emits disconnected
     is_connected                  property
+    kicked                        True after the host removed us (until connect_to)
     signals: connected, disconnected(str), reconnecting, reconnected
 """
 
@@ -62,6 +70,12 @@ RECONNECT_FOR_S = 60
 
 # How long one TCP connect attempt may take before we give up on it.
 CONNECT_TIMEOUT_S = 4
+
+# USER_LEFT reason when the host removed a member (contract C1).
+REASON_KICKED = "kicked"
+
+# disconnected(reason) text after a kick.
+KICKED_TEXT = "You were removed from the room."
 
 # Marker put on the send queue to make the sender thread stop.
 _STOP = object()
@@ -130,6 +144,8 @@ class NetClient(QObject):
         # The last CREATE_ROOM/JOIN_ROOM payload we sent; its password is
         # reused when we rejoin after a dropped connection.
         self._join_payload = None
+        # True after the host removed us; stops auto-reconnect (see kicked_out).
+        self.kicked = False
         self._frame.connect(self._on_frame)
         self._lost.connect(self._on_lost)
         self._connect_done.connect(self._on_connect_done)
@@ -150,6 +166,7 @@ class NetClient(QObject):
         """
         self._drop_link()
         self._reconnecting = False
+        self.kicked = False
         self.host, self.port = host, int(port)
         self._gen += 1
         gen = self._gen
@@ -190,6 +207,23 @@ class NetClient(QObject):
                 link.sender.join(0.5)
         self.app.me.token = None     # seat removed by LEAVE: nothing to resume
         self.disconnected.emit("You left the room.")
+
+    def kicked_out(self):
+        """The host removed us: close without LEAVE and never reconnect.
+
+        Called (GUI thread) by the USER_LEFT handler when the payload names
+        us with reason "kicked". The server has already deleted our seat
+        and changed our token, so a reconnect could not resume anyway; it
+        must not even be tried. Bumping the generation makes the receiver
+        thread's _lost (the server's FIN arrives right after USER_LEFT) a
+        stale signal that _on_lost ignores. Emits disconnected(KICKED_TEXT).
+        """
+        self.kicked = True
+        self._reconnecting = False
+        self._gen += 1
+        self._drop_link()
+        self.app.me.token = None
+        self.disconnected.emit(KICKED_TEXT)
 
     # ---------------------------------------------------------- worker threads
 
@@ -374,3 +408,17 @@ def _on_user_list(app, msg):
             app.set_role(u.get("role"))
             app.me.color = u.get("color", app.me.color)
     app.set_users(users)
+
+
+@on_message(protocol.USER_LEFT)
+def _on_user_left(app, msg):
+    """USER_LEFT about ME with reason "kicked": the host removed us.
+
+    The server sends it to the kicked client only (the others get their
+    own copy without us). Any other USER_LEFT is just a notification for
+    the toasts and the cursor overlay.
+    """
+    p = msg.get("payload") or {}
+    if p.get("reason") == REASON_KICKED and p.get("name") == app.me.username \
+            and app.net is not None:
+        app.net.kicked_out()
