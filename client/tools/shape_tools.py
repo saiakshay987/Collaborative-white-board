@@ -29,9 +29,10 @@ Shift constrains the shape (constrain()):
                     (horizontal, vertical or diagonal)
     rect, ellipse   width and height become equal: a square or a circle
 
-Snap-to-grid: the canvas snaps every point to config.GRID before the tool
-sees it (canvas.snap), and the Shift rules only use max/abs of grid
-multiples, so a constrained shape is still on the grid. The server
+Snap-to-grid: the canvas snaps every point to its grid (canvas.grid_size,
+config.GRID by default) before the tool sees it (canvas.snap), and the
+Shift rules only use max/abs of grid multiples, so a constrained shape is
+still on the grid. The server
 therefore only ever stores snapped values (contract D).
 
 Escape (canvas.cancel_tool -> cancel()) drops the rubber band; nothing is
@@ -56,7 +57,7 @@ from common import kinds_draw, protocol
 MIN_DRAG = 2.0
 
 
-def _r1(value):
+def round1(value):
     """Round to one decimal (contract D), as an int when it is whole (smaller JSON)."""
     value = round(float(value), 1)
     return int(value) if value.is_integer() else value
@@ -204,8 +205,8 @@ class _LineBase(_ShapeTool):
     def build(self, app, start, end):
         """{kind, x1, y1, x2, y2, color, width}: the end points exactly as dragged."""
         obj = {"kind": self.kind,
-               "x1": _r1(start.x()), "y1": _r1(start.y()),
-               "x2": _r1(end.x()), "y2": _r1(end.y())}
+               "x1": round1(start.x()), "y1": round1(start.y()),
+               "x2": round1(end.x()), "y2": round1(end.y())}
         obj.update(self._style(app))
         return obj
 
@@ -225,8 +226,8 @@ class _BoxBase(_ShapeTool):
         """
         x, y = min(start.x(), end.x()), min(start.y(), end.y())
         obj = {"kind": self.kind,
-               "x": _r1(x), "y": _r1(y),
-               "w": _r1(abs(end.x() - start.x())), "h": _r1(abs(end.y() - start.y())),
+               "x": round1(x), "y": round1(y),
+               "w": round1(abs(end.x() - start.x())), "h": round1(abs(end.y() - start.y())),
                "fill": None}
         obj.update(self._style(app))
         return obj

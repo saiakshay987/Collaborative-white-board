@@ -52,9 +52,9 @@ FLUSH_MS = 40            # send the buffered points this often while drawing
 MAX_PART_POINTS = 50     # flush early when the buffer reaches this many points
 MIN_DIST = 1.5           # board units; closer points add nothing visible
 
-# Debug flag. True: batch as described above. False: one OP_STROKE_PART per
-# mouse move (no timer, no point limit except 1), to show how many more
-# packets that costs.
+# Measurement flag. True: batch as described above. False: no flush timer;
+# every kept mouse point is sent at once as its own OP_STROKE_PART, to show
+# how many more packets that costs (compare "Out msg/s" in the stats panel).
 BATCHING = True
 
 # Totals for this client process, for comparing BATCHING on/off.
@@ -66,7 +66,7 @@ def _dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def _pt(p):
+def _to_xy(p):
     """Turn a QPointF (or (x, y)) into a JSON-friendly [x, y] with one decimal (contract D)."""
     if hasattr(p, "x"):
         x, y = p.x(), p.y()
@@ -123,7 +123,7 @@ class StrokeStreamer(QObject):
         self._style = {"tool": pen.get("tool", "pen"), "color": pen.get("color", "#000000"),
                        "width": pen.get("width", 3), "alpha": pen.get("alpha", 1.0)}
         self.packets = self.points = self.dropped = 0
-        self._start(_pt(p))
+        self._start(_to_xy(p))
 
     def _start(self, first):
         """Create the stroke object: first OP_STROKE_PART carries the style."""
@@ -143,7 +143,7 @@ class StrokeStreamer(QObject):
         """
         if not self.active:
             return
-        pt = _pt(p)
+        pt = _to_xy(p)
         if _dist(pt, self._last) < MIN_DIST:
             self.dropped += 1
             TOTALS["dropped"] += 1

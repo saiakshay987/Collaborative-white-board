@@ -239,15 +239,15 @@ def escape(app):
     bar = CommandBar.find(canvas)
     if bar is not None and bar.isVisible() and bar.has_focus():
         bar.close_bar()
-    elif hasattr(canvas, "is_drawing") and canvas.is_drawing():
+    elif canvas.is_drawing():
         canvas.cancel_tool()
     elif bar is not None and bar.isVisible():
         bar.close_bar()
-    elif hasattr(canvas, "cancel_tool"):
+    else:
         canvas.cancel_tool()
 
 
-def _send_history_op(app, type):
+def _send_history_op(app, msg_type):
     """Send UNDO or REDO with an empty payload through send_op; returns an error text or None.
 
     send_op makes the op_id (contract B: UNDO/REDO carry one) and calls
@@ -257,7 +257,7 @@ def _send_history_op(app, type):
     """
     if _is_viewer(app):
         return "Viewers cannot undo or redo"
-    ops.send_op(app, type, {})
+    ops.send_op(app, msg_type, {})
     return None
 
 
@@ -337,7 +337,7 @@ def _require_drawer(app):
         raise CommandError("Viewers cannot change the board")
 
 
-def _send_shape(app, tool_cls, start, end, what):
+def _build_and_send(app, tool_cls, start, end, what):
     """Build a shape with tool_cls.build (same as a mouse drag) and send it; return a message."""
     obj = tool_cls().build(app, start, end)
     ok, reason = shape_tools.send_shape(app, obj)
@@ -358,7 +358,7 @@ def _cmd_two_points(app, args, cmd, tool_cls):
     _check_on_board(a, b)
     if a == b:
         raise CommandError("the two points are the same%s" % _snap_note(app))
-    return _send_shape(app, tool_cls, a, b, cmd.capitalize())
+    return _build_and_send(app, tool_cls, a, b, cmd.capitalize())
 
 
 def _cmd_box(app, args, cmd, tool_cls):
@@ -373,7 +373,7 @@ def _cmd_box(app, args, cmd, tool_cls):
     _check_on_board(a, b)
     if a.x() == b.x() or a.y() == b.y():
         raise CommandError("too small%s" % _snap_note(app))
-    return _send_shape(app, tool_cls, a, b, "Rectangle" if cmd == "rect" else "Ellipse")
+    return _build_and_send(app, tool_cls, a, b, "Rectangle" if cmd == "rect" else "Ellipse")
 
 
 def _cmd_circle(app, args, cmd):
@@ -393,7 +393,7 @@ def _cmd_circle(app, args, cmd):
     a = QPointF(centre.x() - r, centre.y() - r)
     b = QPointF(centre.x() + r, centre.y() + r)
     _check_on_board(a, b)
-    return _send_shape(app, shape_tools.EllipseTool, a, b, "Circle")
+    return _build_and_send(app, shape_tools.EllipseTool, a, b, "Circle")
 
 
 def _snap_note(app):

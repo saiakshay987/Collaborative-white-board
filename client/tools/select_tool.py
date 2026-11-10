@@ -61,7 +61,8 @@ from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QPen
 
 from client import ops, registry
-from client.tools.pen_tool import topmost_hit
+from client.tools.pen_tool import _num, topmost_hit
+from client.tools.shape_tools import round1
 from common import protocol
 
 # Throttle for move/resize updates while dragging (milliseconds).
@@ -81,20 +82,6 @@ RESIZABLE = ("rect", "ellipse", "text", "sticky", "image")
 MIN_SIZE = 1.0
 
 SELECT_COLOR = QColor("#1565c0")
-
-
-def _num(value, default=0.0):
-    """Return value as a float, or default if it is not a number."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _r1(value):
-    """Round to one decimal (contract D), as an int when it is whole (smaller JSON)."""
-    value = round(float(value), 1)
-    return int(value) if value.is_integer() else value
 
 
 def _is_viewer(app):
@@ -154,11 +141,11 @@ def anchor_of(obj):
 def moved_fields(obj, dx, dy):
     """The OP_UPDATE 'set' that moves obj (the press-time copy) by (dx, dy)."""
     if obj.get("kind") == "stroke":
-        return {"points": [[_r1(_num(p[0]) + dx), _r1(_num(p[1]) + dy)] for p in _points(obj)]}
+        return {"points": [[round1(_num(p[0]) + dx), round1(_num(p[1]) + dy)] for p in _points(obj)]}
     if "x1" in obj:
-        return {"x1": _r1(_num(obj.get("x1")) + dx), "y1": _r1(_num(obj.get("y1")) + dy),
-                "x2": _r1(_num(obj.get("x2")) + dx), "y2": _r1(_num(obj.get("y2")) + dy)}
-    return {"x": _r1(_num(obj.get("x")) + dx), "y": _r1(_num(obj.get("y")) + dy)}
+        return {"x1": round1(_num(obj.get("x1")) + dx), "y1": round1(_num(obj.get("y1")) + dy),
+                "x2": round1(_num(obj.get("x2")) + dx), "y2": round1(_num(obj.get("y2")) + dy)}
+    return {"x": round1(_num(obj.get("x")) + dx), "y": round1(_num(obj.get("y")) + dy)}
 
 
 def resized_fields(fixed, moving):
@@ -168,8 +155,8 @@ def resized_fields(fixed, moving):
     corner past the opposite one flips the box instead of breaking it.
     """
     rect = QRectF(fixed, moving).normalized()
-    return {"x": _r1(rect.x()), "y": _r1(rect.y()),
-            "w": _r1(max(MIN_SIZE, rect.width())), "h": _r1(max(MIN_SIZE, rect.height()))}
+    return {"x": round1(rect.x()), "y": round1(rect.y()),
+            "w": round1(max(MIN_SIZE, rect.width())), "h": round1(max(MIN_SIZE, rect.height()))}
 
 
 class SelectTool:
