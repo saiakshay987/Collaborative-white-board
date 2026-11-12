@@ -4,10 +4,13 @@
 Two tabs:
     Host: username, password (optional). Connects to the server on this
           machine (127.0.0.1) and sends CREATE_ROOM. On success it shows the
-          room code and this machine's LAN IP in large text, so the host
-          can read them out to the lab, then "Open whiteboard".
-    Join: server IP, room code, username, password. Sends JOIN_ROOM and
-          opens the whiteboard on JOIN_OK.
+          room code and ALL of this machine's IPv4 addresses (the likely
+          Wi-Fi / hotspot one first, in large text), so the host can read
+          them out to the lab, then "Open whiteboard".
+    Join: server IP (or ip:port), room code, username, password. The last
+          server IP and username are remembered (QSettings). "Test
+          connection" only tries a TCP connect and reports the result. Sends
+          JOIN_ROOM and opens the whiteboard on JOIN_OK.
 
 Flow (nothing here blocks the GUI thread):
 
@@ -21,14 +24,15 @@ The ERROR handler also turns errors that arrive later (FORBIDDEN, ...) into
 a toast when no dialog is open.
 """
 
-import socket
+import threading
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSettings, Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QApplication, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
-from common import config, protocol
+from common import config, netinfo, protocol
+from client import net_client
 from client.registry import on_message
 
 # ERROR codes (contract B) shown as plain-language messages.
@@ -48,6 +52,14 @@ FRIENDLY_ERRORS = {
 JOIN_NETWORK_HINT = ("Check: same Wi-Fi as the host? Host's firewall allows TCP %d? "
                      "Try the host's other IP.")
 
+# QSettings location and keys for the remembered Join fields. The organisation
+# and application names are the same ones main_window.py uses for the window
+# geometry, so everything lands in one settings file per user.
+SETTINGS_ORG = "CN Lab"
+SETTINGS_APP = "LAN Whiteboard"
+KEY_LAST_IP = "join/server_ip"
+KEY_LAST_NAME = "join/username"
+
 # The dialog currently waiting for JOIN_OK / ERROR, if any. The on_message
 # handlers below are registered once at import time and forward to it.
 _active = None
@@ -59,25 +71,27 @@ def friendly_error(payload):
     return FRIENDLY_ERRORS.get(code) or payload.get("text") or "Error: %s" % code
 
 
-def lan_ip():
-    """Return this machine's LAN IP address (what others type in the Join tab).
+def parse_server(text):
+    """Split what the user typed in "Server IP" into (host, port).
 
-    Connecting a UDP socket sends no packet; it only makes the OS pick the
-    outgoing interface, whose address getsockname() reports. Falls back to
-    127.0.0.1 without a network.
+    "192.168.43.57" -> ("192.168.43.57", 5050); "192.168.43.57:6000" uses
+    port 6000 (for a server started with --port). A bad port number falls
+    back to the default so the connect error, not a crash, tells the user.
     """
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("10.255.255.255", 1))
-        return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        s.close()
+    text = text.strip()
+    host, sep, port = text.rpartition(":")
+    if sep and host and port.isdigit() and 0 < int(port) < 65536:
+        return host.strip(), int(port)
+    return text, config.PORT
 
 
 class ConnectDialog(QDialog):
     """Host-or-join dialog. exec_() returns Accepted once we are in a room."""
+
+    # Worker threads report back through signals (queued onto the GUI thread):
+    # widgets are only ever touched on the GUI thread.
+    _addresses_ready = pyqtSignal(object)        # list of netinfo.Address
+    _test_done = pyqtSignal(bool, str, float)    # ok, message, seconds
 
     def __init__(self, app, parent=None, notice=None):
         """Build the tabs for AppState app (app.net must be a NetClient).
@@ -100,6 +114,9 @@ class ConnectDialog(QDialog):
 
         self.net.connected.connect(self._on_connected)
         self.net.disconnected.connect(self._on_disconnected)
+        self._addresses_ready.connect(self._show_addresses)
+        self._test_done.connect(self._show_test_result)
+        self._load_remembered()
         if notice:
             self._show_error(notice)
             self.tabs.setCurrentIndex(1)    # a removed user would join, not host
@@ -122,12 +139,21 @@ class ConnectDialog(QDialog):
 
         join_tab = QWidget()
         form = QFormLayout(join_tab)
-        self.join_ip = QLineEdit(placeholderText="e.g. 192.168.1.20")
+        self.join_ip = QLineEdit(placeholderText="e.g. 192.168.43.57")
         self.join_code = QLineEdit(placeholderText="6 characters, e.g. K7QX2M")
         self.join_code.setMaxLength(6)
         self.join_name = QLineEdit()
         self.join_pw = QLineEdit(echoMode=QLineEdit.Password, placeholderText="if the room has one")
-        form.addRow("Server IP", self.join_ip)
+        self.test_btn = QPushButton("Test connection")
+        self.test_btn.setToolTip("Only tries to open a TCP connection to the server; joins nothing.")
+        self.test_btn.clicked.connect(self._test_connection)
+        self.test_result = QLabel()
+        self.test_result.setWordWrap(True)
+        ip_row = QHBoxLayout()
+        ip_row.addWidget(self.join_ip, 1)
+        ip_row.addWidget(self.test_btn)
+        form.addRow("Server IP", ip_row)
+        form.addRow("", self.test_result)
         form.addRow("Room code", self.join_code)
         form.addRow("Username", self.join_name)
         form.addRow("Password", self.join_pw)
@@ -152,19 +178,27 @@ class ConnectDialog(QDialog):
         return page
 
     def _build_ready_page(self):
-        """Page 1 (host only): room code and LAN IP in large text."""
+        """Page 1 (host only): room code and the server's IPs in large text.
+
+        The likely Wi-Fi / hotspot IP is big; the other usable addresses of
+        this PC are listed small below it, with their adapter names, in case
+        the big one is the wrong network.
+        """
         page = QWidget()
         big = QFont()
         big.setPointSize(32)
         big.setBold(True)
         self.code_label = QLabel()
-        self.ip_label = QLabel()
+        self.ip_label = QLabel("Looking up addresses...")
         for label in (self.code_label, self.ip_label):
             label.setFont(big)
             label.setAlignment(Qt.AlignCenter)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        copy_btn = QPushButton("Copy code and IP")
-        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(
+        self.other_ips_label = QLabel()
+        self.other_ips_label.setAlignment(Qt.AlignCenter)
+        self.other_ips_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.copy_btn = QPushButton("Copy code and IP")
+        self.copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(
             "Room %s at %s" % (self.code_label.text(), self.ip_label.text())))
         open_btn = QPushButton("Open whiteboard")
         open_btn.setDefault(True)
@@ -175,12 +209,61 @@ class ConnectDialog(QDialog):
         layout.addWidget(self.code_label)
         layout.addWidget(QLabel("Server IP (others type this in Join)", alignment=Qt.AlignCenter))
         layout.addWidget(self.ip_label)
+        layout.addWidget(self.other_ips_label)
         buttons = QHBoxLayout()
-        buttons.addWidget(copy_btn)
+        buttons.addWidget(self.copy_btn)
         buttons.addStretch(1)
         buttons.addWidget(open_btn)
         layout.addLayout(buttons)
         return page
+
+    # ------------------------------------------------------------ remembered
+
+    def _load_remembered(self):
+        """Prefill the Join tab with the last server IP and username (QSettings).
+
+        If nothing was stored yet (or the settings store is unusable) the
+        fields simply stay empty.
+        """
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.join_ip.setText(str(settings.value(KEY_LAST_IP, "") or ""))
+        self.join_name.setText(str(settings.value(KEY_LAST_NAME, "") or ""))
+
+    def _remember(self, ip, name):
+        """Store the Join fields for next time."""
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        settings.setValue(KEY_LAST_IP, ip)
+        settings.setValue(KEY_LAST_NAME, name)
+
+    # --------------------------------------------------------- test connection
+
+    def _test_connection(self):
+        """Test-connection button: TCP connect on a worker thread, show the result."""
+        host, port = parse_server(self.join_ip.text())
+        if not host:
+            self.test_result.setStyleSheet("color: #c0392b;")
+            self.test_result.setText("Enter the server IP first.")
+            return
+        self.test_btn.setEnabled(False)
+        self.test_result.setStyleSheet("")
+        self.test_result.setText("Testing %s:%d ..." % (host, port))
+        # The connect can take up to CONNECT_TIMEOUT_S seconds: never on the GUI thread.
+        threading.Thread(target=self._test_worker, args=(host, port),
+                         name="connect-test", daemon=True).start()
+
+    def _test_worker(self, host, port):
+        """Thread: probe the server and report through the _test_done signal."""
+        ok, message, seconds = net_client.probe_connection(host, port)
+        try:
+            self._test_done.emit(ok, message, seconds)
+        except RuntimeError:
+            pass  # the dialog was closed while we were testing
+
+    def _show_test_result(self, ok, message, seconds):
+        """GUI thread: show the outcome of the connection test."""
+        self.test_btn.setEnabled(True)
+        self.test_result.setStyleSheet("color: #1e8449;" if ok else "color: #c0392b;")
+        self.test_result.setText("%s (%.0f ms)" % (message, seconds * 1000) if ok else message)
 
     # ------------------------------------------------------------------ flow
 
@@ -202,11 +285,12 @@ class ConnectDialog(QDialog):
         """Connect button: validate the form, then connect (or reuse the connection)."""
         if self.tabs.currentIndex() == 0:
             name, pw = self.host_name.text().strip(), self.host_pw.text()
-            mode, host, msg_type = "host", "127.0.0.1", protocol.CREATE_ROOM
+            mode, host, port, msg_type = "host", "127.0.0.1", config.PORT, protocol.CREATE_ROOM
             payload = {"username": name}
         else:
             name, pw = self.join_name.text().strip(), self.join_pw.text()
-            host, code = self.join_ip.text().strip(), self.join_code.text().strip().upper()
+            host, port = parse_server(self.join_ip.text())
+            code = self.join_code.text().strip().upper()
             mode, msg_type = "join", protocol.JOIN_ROOM
             payload = {"room": code, "username": name}
             if not host:
@@ -220,14 +304,16 @@ class ConnectDialog(QDialog):
 
         global _active
         _active = self
+        if mode == "join":
+            self._remember(self.join_ip.text().strip(), name)
         self._pending = (mode, host, msg_type, payload)
         self._set_busy(True)
         # After an ERROR the server keeps the connection open, so a retry to
         # the same server just sends the request again.
-        if self.net.is_connected and self.net.host == host:
+        if self.net.is_connected and self.net.host == host and self.net.port == port:
             self._send_request()
         else:
-            self.net.connect_to(host, config.PORT)
+            self.net.connect_to(host, port)
 
     def _send_request(self):
         """Send the pending CREATE_ROOM / JOIN_ROOM."""
@@ -246,10 +332,10 @@ class ConnectDialog(QDialog):
         hint = ""
         if self._pending[0] == "host":
             hint = "\nIs the server running? Start it with: python run_server.py"
-        else:
-            # Join: we never got an answer from the host (connect timed
-            # out, was refused, or went silent before JOIN_OK). On a lab
-            # LAN that is almost always one of these three causes.
+        elif not reason.startswith(net_client.CONNECT_MESSAGES):
+            # Join: the connection went silent or dropped before JOIN_OK.
+            # (A failed connect already carries its own advice, see
+            # net_client.describe_connect_error, so it gets no extra hint.)
             hint = "\n\n" + JOIN_NETWORK_HINT % (self.net.port or config.PORT)
         self._show_error(reason + hint)
 
@@ -260,10 +346,38 @@ class ConnectDialog(QDialog):
         self._finish()
         if mode == "host":
             self.code_label.setText((msg.get("payload") or {}).get("room", ""))
-            self.ip_label.setText(lan_ip())
+            self.ip_label.setText("Looking up addresses...")
+            self.other_ips_label.setText("")
             self.pages.setCurrentIndex(1)
+            # Listing adapters runs `ipconfig` on Windows (~100 ms): do it
+            # off the GUI thread and fill the labels when it is done.
+            threading.Thread(target=self._address_worker, name="lan-addresses",
+                             daemon=True).start()
         else:
             self.accept()
+
+    def _address_worker(self):
+        """Thread: list this PC's IPv4 addresses and hand them to the GUI thread."""
+        try:
+            self._addresses_ready.emit(netinfo.local_addresses())
+        except RuntimeError:
+            pass  # the dialog was closed meanwhile
+
+    def _show_addresses(self, addresses):
+        """GUI thread: likely IP in large text, the other usable ones below it."""
+        best = netinfo.likely_address(addresses)
+        if best is None:
+            self.ip_label.setText("No network")
+            self.other_ips_label.setText("This PC has no usable network address.\n"
+                                         "Connect it to the shared Wi-Fi / hotspot, then restart.")
+            self.copy_btn.setEnabled(False)
+            return
+        self.ip_label.setText(best.ip)
+        others = ["%s: %s" % (a.name, a.ip) for a in addresses if a.usable and not a.likely]
+        text = "Port %d" % (self.net.port or config.PORT)
+        if others:
+            text += "\nOther addresses of this PC (if the big one does not work):\n" + "\n".join(others)
+        self.other_ips_label.setText(text)
 
     def join_error(self, payload):
         """ERROR for our CREATE/JOIN: show it as a friendly message."""

@@ -53,6 +53,7 @@ Public API (contract F):
     signals: connected, disconnected(str), reconnecting, reconnected
 """
 
+import errno
 import queue
 import socket
 import threading
@@ -68,8 +69,24 @@ from client.registry import on_message
 RECONNECT_EVERY_S = 2
 RECONNECT_FOR_S = 60
 
-# How long one TCP connect attempt may take before we give up on it.
-CONNECT_TIMEOUT_S = 4
+# How long one TCP connect attempt may take before we give up on it. A
+# connect to a PC that silently drops our packets (firewall, Wi-Fi client
+# isolation, wrong IP) never gets an answer; without a timeout the OS would
+# wait about 20 s (Windows) before failing.
+CONNECT_TIMEOUT_S = 5
+
+# Plain-language reasons for a failed connect (shown in the connect dialog).
+MSG_TIMEOUT = "Server not reachable: check same hotspot, firewall on the server, correct IP"
+MSG_REFUSED = "No server on that IP/port"
+MSG_UNREACHABLE = "Network unreachable"
+MSG_BAD_ADDRESS = "Not a valid server address: use the IP shown on the host's screen"
+CONNECT_MESSAGES = (MSG_TIMEOUT, MSG_REFUSED, MSG_UNREACHABLE, MSG_BAD_ADDRESS)
+
+# OS error numbers behind those reasons. Windows reports Winsock codes
+# (10060 ...) that Python may not map onto the errno names, so both appear.
+_TIMEOUT_CODES = {errno.ETIMEDOUT, 10060}
+_REFUSED_CODES = {errno.ECONNREFUSED, 10061}
+_UNREACHABLE_CODES = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, 10050, 10051, 10065}
 
 # USER_LEFT reason when the host removed a member (contract C1).
 REASON_KICKED = "kicked"
@@ -79,6 +96,41 @@ KICKED_TEXT = "You were removed from the room."
 
 # Marker put on the send queue to make the sender thread stop.
 _STOP = object()
+
+
+def describe_connect_error(exc):
+    """Turn an OSError raised while connecting into one clear sentence.
+
+    * timed out    -> the packets vanished: wrong network, firewall on the
+                      server, wrong IP, or Wi-Fi client isolation.
+    * refused      -> the PC answered but nothing listens on that port.
+    * unreachable  -> this PC has no route to that address (not on the
+                      same network, Wi-Fi off).
+    """
+    codes = {getattr(exc, "errno", None), getattr(exc, "winerror", None)}
+    if isinstance(exc, socket.gaierror):
+        return MSG_BAD_ADDRESS
+    if isinstance(exc, (socket.timeout, TimeoutError)) or codes & _TIMEOUT_CODES:
+        return MSG_TIMEOUT
+    if isinstance(exc, ConnectionRefusedError) or codes & _REFUSED_CODES:
+        return MSG_REFUSED
+    if codes & _UNREACHABLE_CODES:
+        return MSG_UNREACHABLE
+    return "Could not connect: %s" % exc
+
+
+def probe_connection(host, port, timeout=CONNECT_TIMEOUT_S):
+    """Try one TCP connect and close it again; return (ok, message, seconds).
+
+    Blocks for up to `timeout` seconds, so callers on the GUI thread must run
+    it on a worker thread (the connect dialog's "Test connection" does).
+    """
+    start = time.time()
+    try:
+        socket.create_connection((host, int(port)), timeout=timeout).close()
+    except (OSError, ValueError) as exc:
+        return False, describe_connect_error(exc), time.time() - start
+    return True, "Server reachable", time.time() - start
 
 
 class _Link:
@@ -232,7 +284,7 @@ class NetClient(QObject):
         try:
             sock = self._open_socket(host, port)
         except OSError as exc:
-            self._connect_done.emit(gen, None, str(exc))
+            self._connect_done.emit(gen, None, describe_connect_error(exc))
             return
         self._connect_done.emit(gen, sock, "")
 
@@ -330,7 +382,8 @@ class NetClient(QObject):
                 sock.close()
             return
         if sock is None:
-            self.disconnected.emit("Could not reach %s:%d (%s)." % (self.host, self.port, error))
+            # error is already a clear sentence (describe_connect_error).
+            self.disconnected.emit("%s (%s:%d)" % (error, self.host, self.port))
             return
         self._start_link(sock)
         self.connected.emit()
