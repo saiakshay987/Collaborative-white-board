@@ -289,6 +289,111 @@ class RestoreTests(HandlerBase):
         self.assertGreater(room.versions.save('later', 'carol')['id'], old['id'])
 
 
+class RoomIdentityTests(unittest.TestCase):
+    """Password, host, member colors and roles, and the chat log survive a server restart (rooms are joinable again)."""
+
+    def setUp(self):
+        """A private data folder and a locked room with a host, an editor-turned-viewer, and some chat."""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+        self.room = rooms.manager.create_room('secret')
+        self.host = FakeSession(self.room, 'hana', 'host')
+        self.pat = FakeSession(self.room, 'pat', 'editor')
+        self.pat.member.role = 'viewer'                       # the host demoted pat with SET_ROLE; no seat change in between
+        self.room.chat.add_room('hana', 'hello')
+        self.room.chat.add_dm('hana', 'pat', 'psst')
+        self.code = self.room.code
+        self.colors = {'hana': self.host.member.color, 'pat': self.pat.member.color}
+        self.room.host_name = 'hana'
+
+    def tearDown(self):
+        """Remove the folder and forget the rooms of this test."""
+        self._tmp.cleanup()
+        with rooms.manager.lock:
+            rooms.manager.rooms.pop(self.code, None)
+
+    def restart(self):
+        """Save the room, forget every room in memory (a new server process), load the autosaves."""
+        versions.save_room(self.room, self.dir)
+        with rooms.manager.lock:
+            rooms.manager.rooms.clear()
+        self.assertEqual(versions.restore_rooms(self.dir), [self.code])
+        return rooms.manager.get(self.code)
+
+    def test_password_survives_and_is_stored_hashed(self):
+        versions.save_room(self.room, self.dir)
+        with open(os.path.join(self.dir, self.code, 'autosave.json'), encoding='utf-8') as f:
+            self.assertNotIn('secret', f.read())             # only the salted hash is on disk
+        room = self.restart()
+        self.assertTrue(room.check_password('secret'))
+        self.assertFalse(room.check_password('wrong'))
+        self.assertFalse(room.check_password(None))
+
+    def test_returning_users_get_their_role_and_color_back(self):
+        room = self.restart()
+        self.assertEqual(room.members, {})                    # nobody is online after a restart
+        session = FakeSession.__new__(FakeSession)            # a connection that is not seated yet
+        pat, rejoin = rooms.manager.join(room, 'pat', session, 'secret')
+        self.assertEqual((pat.role, pat.color, rejoin), ('viewer', self.colors['pat'], False))
+        hana, _ = rooms.manager.join(room, 'hana', session, 'secret')
+        self.assertEqual((hana.role, hana.color), ('host', self.colors['hana']))
+        self.assertEqual(room.host_name, 'hana')
+
+    def test_stranger_does_not_become_host_and_gets_a_new_color(self):
+        room = self.restart()
+        new, _ = rooms.manager.join(room, 'newbie', FakeSession.__new__(FakeSession), 'secret')
+        self.assertEqual(new.role, 'editor')                  # the host is known, so a newcomer is an editor
+        self.assertNotIn(new.color, self.colors.values())
+
+    def test_wrong_password_is_still_refused_after_restart(self):
+        room = self.restart()
+        with self.assertRaises(rooms.JoinError) as ctx:
+            rooms.manager.join(room, 'pat', FakeSession.__new__(FakeSession), 'nope')
+        self.assertEqual(ctx.exception.code, 'BAD_PASSWORD')
+
+    def test_chat_log_and_counter_survive(self):
+        room = self.restart()
+        self.assertEqual([(m['type'], m['text']) for m in room.chat.history_for('pat')],
+                         [('CHAT', 'hello'), ('DM', 'psst')])
+        self.assertEqual(room.chat.add_room('pat', 'again')['msg_id'], 'm3')   # ids continue, no duplicate msg_id
+        self.assertEqual([m['text'] for m in room.chat.history_for('stranger')], ['hello', 'again'])   # DMs stay private
+
+    def test_role_change_and_chat_make_the_room_dirty(self):
+        versions.save_room(self.room, self.dir)
+        self.assertFalse(versions.save_room(self.room, self.dir))        # nothing changed
+        self.room.chat.add_room('hana', 'new message')
+        self.assertTrue(versions.save_room(self.room, self.dir))
+        self.pat.member.role = 'editor'
+        self.assertTrue(versions.save_room(self.room, self.dir))
+
+    def test_restored_room_is_not_rewritten_until_it_changes(self):
+        room = self.restart()
+        self.assertFalse(versions.save_room(room, self.dir))
+        self.assertAlmostEqual(versions.last_updated(room), time.time(), delta=5)   # from saved_ts
+
+    def test_old_file_without_the_new_fields_loads_as_an_open_room(self):
+        path = os.path.join(self.dir, 'KKKKKK', 'autosave.json')
+        os.makedirs(os.path.dirname(path))
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({'format': 1, 'room': 'KKKKKK', 'seq': 0, 'objects': [], 'versions': []}, f)
+        self.assertEqual(versions.restore_rooms(self.dir), ['KKKKKK'])
+        room = rooms.manager.get('KKKKKK')
+        self.assertTrue(room.check_password(None))            # no password in the file: an open room
+        self.assertIsNone(room.host_name)                     # the first user to join becomes host
+        with rooms.manager.lock:
+            rooms.manager.rooms.pop('KKKKKK', None)
+
+    def test_damaged_auth_fails_closed_and_bad_members_are_dropped(self):
+        extras = versions.clean_extras({'auth': {'salt': 'zz', 'hash': 'abc'},
+                                        'members': {'ok': {'color': '#fff', 'role': 'editor'},
+                                                    'bad': {'color': '#fff', 'role': 'root'}, 7: 'x'},
+                                        'host': 5, 'chat': {'messages': [{'type': 'CHAT'}, 'junk']}})
+        self.assertEqual(list(extras['members']), ['ok'])
+        self.assertIsNone(extras['host'])
+        self.assertEqual(extras['chat_messages'], [])
+        self.assertEqual(extras['hash'], 'unreadable')        # locked: nobody can match it
+
+
 class StartupTests(unittest.TestCase):
     """The autosave thread's wait for server.bootstrap."""
 

@@ -28,7 +28,8 @@ Three jobs live in this file.
 2. Autosave (contract E7). One background thread wakes up every
    AUTOSAVE_INTERVAL_S (10 s) and writes every room that changed to
 
-       server_data/<ROOM>/autosave.json   {format, room, seq, saved_ts, objects, versions}
+       server_data/<ROOM>/autosave.json   {format, room, seq, saved_ts, objects, versions, assets,
+                                           host, members, auth, chat}
 
    `versions` holds the METADATA of the versions; their object lists are in the
    versions/ folder next to it. `assets` (server/assets.py) holds the metadata of the
@@ -55,9 +56,15 @@ on_member_left hook only wake the autosave thread up. That way a slow disk can
 never freeze a room, and no thread waits for room.lock while holding
 _save_lock in the opposite order (no deadlock).
 
-What is NOT restored: passwords (contract B keeps them in memory only), members
-and roles, chat and undo stacks. The first user to join a restored room becomes
-its host (rooms.RoomManager.join: host if the room has nobody in it).
+   The room's people and chat are saved too (see room_extras): `host` (the host's
+   username), `members` (username -> color and role, so a returning user gets
+   the same role back, contract E8), `auth` (the SALTED sha256 of the password
+   and its salt, never the password itself) and `chat` (the chat log). Old files
+   without these fields still load: the room is then simply open and has no host.
+
+What is NOT restored: undo stacks and who is online (after a restart nobody is). A
+restored room starts with an empty member list; the first user to join takes the
+role their `members` entry says, and the saved host gets host back.
 """
 import atexit
 import copy
@@ -128,6 +135,7 @@ class VersionStore:
         self.next_id = 1
         self.rev = 0            # +1 on every change; autosave skips rooms whose (seq, rev) is unchanged
         self.saved_key = None   # (seq, rev) of the last autosave of this room
+        self.updated_ts = time.time()   # when the room last changed on disk (the room list shows it)
         self.dropped = []       # ids whose files in versions/ still have to be deleted
         self.last_seq = None    # board seq of the newest version: the periodic one is skipped if the board is still at it
         self.next_auto_ts = time.time() + AUTO_VERSION_INTERVAL_S
@@ -332,25 +340,60 @@ _stop = threading.Event()
 _thread = None
 
 
+def room_extras(room):
+    """The people and chat of a room as plain JSON data: {host, members, auth, chat}. Caller holds room.lock.
+
+    members is room.profiles overlaid with the seats that exist right now,
+    because a profile is only refreshed when a seat goes away and the host may
+    have changed an online member's role with SET_ROLE since. auth is the salted
+    hash kept by rooms.Room (P1) and the chat is the ChatLog of chat.py (P4);
+    both are read through the few attributes named here so that only this
+    function (and apply_extras) knows their layout.
+    """
+    members = {name: dict(p) for name, p in room.profiles.items()}
+    for name, m in room.members.items():
+        members[name] = {'color': m.color, 'role': m.role}
+    chat = getattr(room, 'chat', None)
+    if chat is not None:
+        with chat._lock:                    # the log has its own lock (it is not room.lock)
+            chat_doc = {'counter': chat._counter, 'messages': [dict(m) for m in chat._messages]}
+    else:
+        chat_doc = {'counter': 0, 'messages': []}
+    return {'host': room.host_name, 'members': members,
+            'auth': {'salt': room._salt.hex(), 'hash': room._pw_hash},
+            'chat': chat_doc}
+
+
+def last_updated(room):
+    """Epoch seconds of the room's last change (board, versions, pictures, people or chat); the room list shows it."""
+    store = getattr(room, 'versions', None)
+    return store.updated_ts if store is not None else room.created_ts
+
+
 def room_document(room):
     """Build the autosave.json content of a room, as (JSON text, key). Takes room.lock.
 
-    key is (seq, versions.rev, assets.rev): when it equals the key of the
+    key is (seq, versions.rev, assets.rev, extras): when it equals the key of the
     last save, nothing changed and the file does not need to be written again.
+    The extras (people and chat) are part of the key as their JSON text, so a
+    new chat message or a role change also makes the room "changed".
     """
     with room.lock:
         board, store = room.board, room.versions
         assets = getattr(room, 'assets', None)      # None in a program that does not load server.assets
+        extras = room_extras(room)
         doc = {'format': AUTOSAVE_FORMAT, 'room': room.code, 'seq': board.seq,
                'saved_ts': time.time(),
                'objects': sorted(board.objects.values(), key=lambda o: o.get('z', 0)),
                'versions': store.meta_list(),
                'assets': assets.meta_list() if assets is not None else []}
+        doc.update(extras)
         # Serialise INSIDE the lock: the objects are shared with the live board
         # and a handler thread may change them as soon as we let go. The JSON
         # text is written to disk later, outside the lock.
         text = json.dumps(doc, separators=(',', ':'))
-        return text, (board.seq, store.rev, assets.rev if assets is not None else 0)
+        extras_key = json.dumps(extras, sort_keys=True, separators=(',', ':'))
+        return text, (board.seq, store.rev, assets.rev if assets is not None else 0, extras_key)
 
 
 def write_atomic(path, text):
@@ -438,6 +481,7 @@ def save_room(room, data_dir=None, force=False):
             print('[versions] autosave of room %s failed: %s' % (room.code, exc))
             return False
         room.versions.saved_key = key
+        room.versions.updated_ts = time.time()      # the file on disk now holds this change
         return True
 
 
@@ -502,7 +546,9 @@ def _autosave_loop():
 # ---------------------------------------------------------------- loading from disk
 
 def load_document(path, code):
-    """Read and check one autosave.json. Returns (objects, seq, version metas, asset metas) or None if unusable.
+    """Read and check one autosave.json. Returns (objects, seq, version metas, asset metas, extras, saved_ts) or None.
+
+    None means unusable. extras is the cleaned people/password/chat data (see clean_extras).
 
     The file is data written by an earlier run, but it may be damaged or
     edited by hand, so every field is checked before it can reach a room.
@@ -522,8 +568,63 @@ def load_document(path, code):
         print('[versions] ignoring %s: not a valid autosave' % path)
         return None
     metas, asset_metas = doc.get('versions'), doc.get('assets')
+    saved_ts = doc.get('saved_ts')
+    saved_ts = float(saved_ts) if isinstance(saved_ts, (int, float)) and not isinstance(saved_ts, bool) else None
     return (objects, seq, metas if isinstance(metas, list) else [],
-            asset_metas if isinstance(asset_metas, list) else [])
+            asset_metas if isinstance(asset_metas, list) else [], clean_extras(doc), saved_ts)
+
+
+def clean_extras(doc):
+    """Check the people, password and chat fields of a loaded autosave; anything malformed is dropped, never trusted.
+
+    Returns {host, members, salt, hash, chat_counter, chat_messages}. A file with
+    no password gives an open room. A file whose `auth` is damaged but names a
+    hash gives a room that stays LOCKED with a hash nobody can match (fail
+    closed: better a locked room than an accidentally open one).
+    """
+    roles = ('host', 'editor', 'viewer')
+    members = {}
+    raw = doc.get('members')
+    for name, p in (raw.items() if isinstance(raw, dict) else ()):
+        if (isinstance(name, str) and isinstance(p, dict) and p.get('role') in roles
+                and isinstance(p.get('color'), str)):
+            members[name] = {'color': p['color'], 'role': p['role']}
+    host = doc.get('host') if isinstance(doc.get('host'), str) else None
+    auth = doc.get('auth') if isinstance(doc.get('auth'), dict) else {}
+    salt, pw_hash = None, auth.get('hash')
+    try:
+        salt = bytes.fromhex(auth.get('salt'))
+    except (TypeError, ValueError):
+        pass
+    if pw_hash is not None and (not isinstance(pw_hash, str) or salt is None):
+        pw_hash, salt = 'unreadable', None  # fail closed: locked, no password can match
+    chat = doc.get('chat') if isinstance(doc.get('chat'), dict) else {}
+    raw_msgs = chat.get('messages') if isinstance(chat.get('messages'), list) else []
+    msgs = [m for m in raw_msgs
+            if isinstance(m, dict) and m.get('type') in ('CHAT', 'DM') and isinstance(m.get('msg_id'), str)
+            and isinstance(m.get('from'), str) and isinstance(m.get('text'), str)
+            and isinstance(m.get('ts'), (int, float))]
+    counter = chat.get('counter')
+    counter = counter if isinstance(counter, int) and not isinstance(counter, bool) and counter >= 0 else len(msgs)
+    return {'host': host, 'members': members, 'salt': salt, 'hash': pw_hash,
+            'chat_counter': counter, 'chat_messages': msgs}
+
+
+def apply_extras(room, extras):
+    """Put the cleaned people, password and chat of an autosave into a fresh room. Caller holds room.lock."""
+    room.host_name = extras['host']
+    room.profiles = dict(extras['members'])
+    # Colors are handed out in join order; continue after the saved users so a
+    # newcomer does not get the color of someone the room remembers.
+    room._color_index = len(room.profiles)
+    if extras['salt'] is not None:
+        room._salt = extras['salt']
+    room._pw_hash = extras['hash']
+    chat = getattr(room, 'chat', None)
+    if chat is not None:
+        with chat._lock:
+            chat._messages = list(extras['chat_messages'])
+            chat._counter = extras['chat_counter']
 
 
 def restore_rooms(data_dir=None):
@@ -533,7 +634,8 @@ def restore_rooms(data_dir=None):
     on_room_created hook runs (board, undo, versions, chat). create_room picks
     a random code; it is replaced by the saved one under both locks (lock
     order manager, then room, as in RoomManager.sweep). The rooms start with
-    no members and no password, see the module docstring.
+    nobody online but keep their password hash, host and member profiles
+    (apply_extras), so they can be listed and joined again straight away.
     """
     data_dir = data_dir or _default_data_dir()
     restored = []
@@ -552,19 +654,21 @@ def restore_rooms(data_dir=None):
         loaded = load_document(path, code)
         if loaded is None:
             continue
-        objects, seq, metas, asset_metas = loaded
+        objects, seq, metas, asset_metas, extras, saved_ts = loaded
         room = rooms.manager.create_room()
         with rooms.manager.lock, room.lock:
             del rooms.manager.rooms[room.code]
             room.code = code
             rooms.manager.rooms[code] = room
             room.board.restore(objects, seq)
+            apply_extras(room, extras)
+            if saved_ts is not None:
+                room.versions.updated_ts = saved_ts
             room.versions.load_meta(metas)      # first the metadata, then the files, which replace entries with a file
             room.versions.load_files(os.path.join(data_dir, code, VERSIONS_DIR))
             if getattr(room, 'assets', None) is not None:
                 room.assets.load(asset_metas, os.path.join(data_dir, code, ASSETS_DIR))
-            room.versions.saved_key = (seq, room.versions.rev,        # identical to the file: no rewrite until something changes
-                                       room.assets.rev if getattr(room, 'assets', None) is not None else 0)
+            room.versions.saved_key = room_document(room)[1]        # identical to the file: no rewrite until something changes
         restored.append(code)
         print('[versions] room %s restored from autosave (%d objects, seq %d)' % (code, len(objects), seq))
     return restored
