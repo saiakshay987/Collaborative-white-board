@@ -254,6 +254,32 @@ class Room:
         with self.lock:
             self.profiles[member.name] = {"color": member.color, "role": member.role}
 
+    def is_locked(self):
+        """True if the room has a password (the room list shows a lock)."""
+        return self._pw_hash is not None
+
+    def summary(self):
+        """One row of the room list (ROOM_LIST, contract C1): what a stranger may know about the room.
+
+        Only counts and the host's name: no member names, no chat, no board
+        content. `members` counts every username the room remembers (online
+        or not), `online` those with a live connection right now. `updated`
+        is the time of the last change that reached the autosave (the
+        VersionStore, P3, keeps it); a room without one reports its creation.
+        """
+        with self.lock:
+            names = set(self.profiles) | set(self.members)
+            store = getattr(self, "versions", None)
+            return {
+                "code": self.code,
+                "host": self.host_name,
+                "online": len(self.online_members()),
+                "members": len(names),
+                "locked": self.is_locked(),
+                "objects": len(self.board.objects) if self.board is not None else 0,
+                "updated": store.updated_ts if store is not None else self.created_ts,
+            }
+
     def has_host(self):
         """True if some seat in the room currently has the host role."""
         with self.lock:
@@ -368,6 +394,19 @@ class RoomManager:
         with room.lock:
             _run_hooks(_room_created_hooks, room)
         return room
+
+    def summaries(self):
+        """Return the summary() of every room, most recently updated first (for ROOM_LIST).
+
+        The room list is copied under manager.lock and each summary is taken
+        under that room's own lock afterwards, so this never holds two room
+        locks at once and cannot deadlock with join() or sweep().
+        """
+        with self.lock:
+            room_list = list(self.rooms.values())
+        rows = [room.summary() for room in room_list]
+        rows.sort(key=lambda row: row["updated"], reverse=True)
+        return rows
 
     def get(self, code):
         """Return the room with this code, or None."""

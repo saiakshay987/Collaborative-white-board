@@ -133,6 +133,45 @@ def probe_connection(host, port, timeout=CONNECT_TIMEOUT_S):
     return True, "Server reachable", time.time() - start
 
 
+def fetch_room_list(host, port, timeout=CONNECT_TIMEOUT_S):
+    """Ask the server which rooms exist; return (rooms, error). Exactly one of the two is None.
+
+    Blocking (up to about `timeout` seconds), so the connect dialog runs it on
+    a worker thread. rooms is the list of dicts of ROOM_LIST (code, host,
+    online, members, locked, objects, updated).
+
+    Why a SHORT-LIVED connection of its own and not the NetClient socket: the
+    dialog refreshes every 5 s, also while the user has not picked a room and
+    while the server may be down. NetClient is made for ONE long session (it
+    reconnects for 60 s, emits connected/disconnected, and the dialog treats
+    those signals as "my join failed"), so polling through it would fire false
+    join errors and reconnect loops. A throw-away socket costs one TCP
+    handshake per refresh, which is nothing on a LAN, and when it fails the
+    join connection is untouched. The server PINGs every connection, so
+    frames other than ROOM_LIST are skipped until the answer arrives.
+    """
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=timeout)
+    except (OSError, ValueError) as exc:
+        return None, describe_connect_error(exc)
+    try:
+        sock.settimeout(timeout)
+        framing.send_msg(sock, protocol.make_msg(protocol.ROOM_LIST_REQUEST))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            msg = framing.recv_msg(sock)
+            if msg is None:
+                return None, "The server closed the connection"
+            if msg.get("type") == protocol.ROOM_LIST:
+                rows = (msg.get("payload") or {}).get("rooms")
+                return (rows if isinstance(rows, list) else []), None
+        return None, "The server did not answer the room list request"
+    except (OSError, framing.ProtocolError) as exc:
+        return None, describe_connect_error(exc) if isinstance(exc, OSError) else str(exc)
+    finally:
+        sock.close()
+
+
 class _Link:
     """One TCP connection: the socket, its send queue and its generation number.
 

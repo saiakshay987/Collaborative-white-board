@@ -9,8 +9,12 @@ Two tabs:
           them out to the lab, then "Open whiteboard".
     Join: server IP (or ip:port), room code, username, password. The last
           server IP and username are remembered (QSettings). "Test
-          connection" only tries a TCP connect and reports the result. Sends
-          JOIN_ROOM and opens the whiteboard on JOIN_OK.
+          connection" only tries a TCP connect and reports the result.
+          "Find rooms" (and an automatic refresh every 5 s while this tab is
+          open) lists the rooms the server knows: code, host, online/total,
+          objects, a lock for password rooms and when they last changed.
+          Double-click a row to fill the room code (and ask for the password
+          of a locked room). Sends JOIN_ROOM and opens the whiteboard on JOIN_OK.
 
 Flow (nothing here blocks the GUI thread):
 
@@ -25,11 +29,14 @@ a toast when no dialog is open.
 """
 
 import threading
+import time
 
-from PyQt5.QtCore import QSettings, Qt, pyqtSignal
+from PyQt5.QtCore import QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QApplication, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QPushButton, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QDialog, QFormLayout, QHBoxLayout,
+                             QHeaderView, QInputDialog, QLabel, QLineEdit, QPushButton,
+                             QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 from common import config, netinfo, protocol
 from client import net_client
@@ -60,6 +67,11 @@ SETTINGS_APP = "LAN Whiteboard"
 KEY_LAST_IP = "join/server_ip"
 KEY_LAST_NAME = "join/username"
 
+# Room list (Revision 5): how often the Join tab asks the server again, and the table columns.
+ROOM_REFRESH_MS = 5000
+ROOM_COLUMNS = ["Room", "Host", "Online", "Objects", "Lock", "Updated"]
+LOCK_ICON = "\U0001F512"   # padlock, shown for a room that has a password
+
 # The dialog currently waiting for JOIN_OK / ERROR, if any. The on_message
 # handlers below are registered once at import time and forward to it.
 _active = None
@@ -85,6 +97,39 @@ def parse_server(text):
     return text, config.PORT
 
 
+def format_updated(ts, now=None):
+    """Return "just now", "5 min ago", "3 h ago" or a date for the epoch time ts of a room's last change."""
+    now = time.time() if now is None else now
+    try:
+        age = max(0.0, now - float(ts))
+    except (TypeError, ValueError):
+        return "?"
+    if age < 60:
+        return "just now"
+    if age < 3600:
+        return "%d min ago" % (age // 60)
+    if age < 86400:
+        return "%d h ago" % (age // 3600)
+    return time.strftime("%d %b %H:%M", time.localtime(ts))
+
+
+def room_cells(row, now=None):
+    """Turn one ROOM_LIST row into the six display strings of the table (see ROOM_COLUMNS).
+
+    The server is trusted for the shape but not for the types: a missing or odd
+    field shows as a dash instead of raising on the GUI thread.
+    """
+    def num(key):
+        """The row's field as an int, or 0."""
+        value = row.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    host = row.get("host")
+    return [str(row.get("code", "")), host if isinstance(host, str) and host else "-",
+            "%d/%d" % (num("online"), num("members")), str(num("objects")),
+            LOCK_ICON if row.get("locked") else "", format_updated(row.get("updated"), now)]
+
+
 class ConnectDialog(QDialog):
     """Host-or-join dialog. exec_() returns Accepted once we are in a room."""
 
@@ -92,6 +137,7 @@ class ConnectDialog(QDialog):
     # widgets are only ever touched on the GUI thread.
     _addresses_ready = pyqtSignal(object)        # list of netinfo.Address
     _test_done = pyqtSignal(bool, str, float)    # ok, message, seconds
+    _rooms_ready = pyqtSignal(str, object, str)  # host asked, list of rows (or None), error text
 
     def __init__(self, app, parent=None, notice=None, prefill=None):
         """Build the tabs for AppState app (app.net must be a NetClient).
@@ -119,12 +165,19 @@ class ConnectDialog(QDialog):
         self.net.disconnected.connect(self._on_disconnected)
         self._addresses_ready.connect(self._show_addresses)
         self._test_done.connect(self._show_test_result)
+        self._rooms_ready.connect(self._show_rooms)
+        self._rooms_busy = False                  # a room-list request is in flight
+        self._room_timer = QTimer(self)           # auto-refresh; stopped in done()
+        self._room_timer.timeout.connect(self._auto_refresh)
+        self._room_timer.start(ROOM_REFRESH_MS)
+        self.tabs.currentChanged.connect(lambda _i: self._auto_refresh())
         self._load_remembered()
         if prefill:
             self._apply_prefill(prefill)
         if notice:
             self._show_notice(notice)
             self.tabs.setCurrentIndex(1)    # a user who left would join again, not host
+        QTimer.singleShot(0, self._auto_refresh)    # list the rooms of the remembered server at once
 
     # ----------------------------------------------------------------- layout
 
@@ -154,11 +207,29 @@ class ConnectDialog(QDialog):
         self.test_btn.clicked.connect(self._test_connection)
         self.test_result = QLabel()
         self.test_result.setWordWrap(True)
+        self.find_btn = QPushButton("Find rooms")
+        self.find_btn.setToolTip("Ask the server which rooms it has (refreshes by itself every 5 s).")
+        self.find_btn.clicked.connect(lambda: self._find_rooms(manual=True))
         ip_row = QHBoxLayout()
         ip_row.addWidget(self.join_ip, 1)
         ip_row.addWidget(self.test_btn)
+        ip_row.addWidget(self.find_btn)
         form.addRow("Server IP", ip_row)
         form.addRow("", self.test_result)
+        self.rooms_table = QTableWidget(0, len(ROOM_COLUMNS))
+        self.rooms_table.setHorizontalHeaderLabels(ROOM_COLUMNS)
+        self.rooms_table.verticalHeader().setVisible(False)
+        self.rooms_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.rooms_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.rooms_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.rooms_table.setMinimumHeight(120)
+        self.rooms_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.rooms_table.setToolTip("Double-click a room to fill in its code.")
+        self.rooms_table.cellDoubleClicked.connect(self._room_chosen)
+        self.rooms_status = QLabel("Enter the server IP to see its rooms.")
+        self.rooms_status.setWordWrap(True)
+        form.addRow(self.rooms_table)
+        form.addRow(self.rooms_status)
         form.addRow("Room code", self.join_code)
         form.addRow("Username", self.join_name)
         form.addRow("Password", self.join_pw)
@@ -284,6 +355,90 @@ class ConnectDialog(QDialog):
         self.test_btn.setEnabled(True)
         self.test_result.setStyleSheet("color: #1e8449;" if ok else "color: #c0392b;")
         self.test_result.setText("%s (%.0f ms)" % (message, seconds * 1000) if ok else message)
+
+    # ------------------------------------------------------------- room list
+
+    def _auto_refresh(self):
+        """Timer / tab-change slot: refresh the list, but only while it can be seen and nothing else is going on."""
+        if (self.pages.currentIndex() == 0 and self.tabs.currentIndex() == 1
+                and self._pending is None and self.join_ip.text().strip()):
+            self._find_rooms(manual=False)
+
+    def _find_rooms(self, manual):
+        """Ask the server for its room list on a worker thread (never on the GUI thread).
+
+        manual is True for the button: an empty IP is then reported to the
+        user; the timer stays quiet. Only one request is in flight at a time.
+        """
+        host, port = parse_server(self.join_ip.text())
+        if not host:
+            if manual:
+                self.rooms_status.setText("Enter the server IP first.")
+            return
+        if self._rooms_busy:
+            return
+        self._rooms_busy = True
+        if manual:
+            self.rooms_status.setStyleSheet("")
+            self.rooms_status.setText("Looking for rooms on %s:%d ..." % (host, port))
+        threading.Thread(target=self._rooms_worker, args=(host, port),
+                         name="room-list", daemon=True).start()
+
+    def _rooms_worker(self, host, port):
+        """Thread: fetch the list (a short-lived connection, see net_client.fetch_room_list) and report back."""
+        rows, error = net_client.fetch_room_list(host, port)
+        try:
+            self._rooms_ready.emit(host, rows, error or "")
+        except RuntimeError:
+            pass  # the dialog was closed meanwhile
+
+    def _show_rooms(self, host, rows, error):
+        """GUI thread: fill the table (or show why not). An answer for an IP the user has since changed is dropped."""
+        self._rooms_busy = False
+        if host != parse_server(self.join_ip.text())[0]:
+            return
+        if rows is None:
+            self.rooms_status.setStyleSheet("color: #c0392b;")
+            self.rooms_status.setText("Cannot list rooms: %s" % error)
+            return
+        selected = self._selected_code()
+        now = time.time()
+        self.rooms_table.setUpdatesEnabled(False)
+        self.rooms_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, text in enumerate(room_cells(row, now)):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter if c >= 2 else Qt.AlignVCenter | Qt.AlignLeft)
+                item.setData(Qt.UserRole, row)      # the double-click handler reads code and locked from here
+                self.rooms_table.setItem(r, c, item)
+            if row.get("code") == selected:
+                self.rooms_table.selectRow(r)
+        self.rooms_table.setUpdatesEnabled(True)
+        self.rooms_status.setStyleSheet("")
+        self.rooms_status.setText("%d room%s on this server. Double-click one to join it."
+                                  % (len(rows), "" if len(rows) == 1 else "s") if rows
+                                  else "No rooms on this server yet. Host one in the Host tab.")
+
+    def _selected_code(self):
+        """The room code of the selected table row, or None."""
+        items = self.rooms_table.selectedItems()
+        return (items[0].data(Qt.UserRole) or {}).get("code") if items else None
+
+    def _room_chosen(self, row, _column):
+        """Double-click: fill the room code; for a locked room ask for the password right away."""
+        item = self.rooms_table.item(row, 0)
+        info = item.data(Qt.UserRole) if item is not None else None
+        if not isinstance(info, dict) or not info.get("code"):
+            return
+        self.join_code.setText(str(info["code"]))
+        self.join_pw.clear()
+        if info.get("locked"):
+            text, ok = QInputDialog.getText(self, "Room password",
+                                            "Room %s is locked. Password:" % info["code"],
+                                            QLineEdit.Password)
+            if ok:
+                self.join_pw.setText(text)
+        (self.go_btn if self.join_name.text().strip() else self.join_name).setFocus()
 
     # ------------------------------------------------------------------ flow
 
@@ -422,7 +577,8 @@ class ConnectDialog(QDialog):
                 pass
 
     def done(self, result):
-        """Closing the dialog (accept or reject) always detaches it from NetClient."""
+        """Closing the dialog (accept or reject) detaches it from NetClient and stops the room-list timer."""
+        self._room_timer.stop()
         self._finish()
         super().done(result)
 
