@@ -1,6 +1,8 @@
 # CONTRACT.md
 
-Revision 4. Frozen: additions only, applied by P1.
+Revision 5. Frozen: additions only, applied by P1.
+
+Revision 5: the room list. Two new message types, ROOM_LIST_REQUEST and ROOM_LIST (C1), the only request a connection may send before it has joined besides CREATE_ROOM, JOIN_ROOM and PONG; `autosave.json` now holds the whole room (E7), so a restarted server lists and re-opens every room with its password, host, colors and roles (E8).
 
 Revision 4 (no new message types or fields): rooms are kept while the server runs (E8), the join order ends with VERSIONS (C1), `app.reset_session()` and `@on_session_reset` (F, G).
 
@@ -29,7 +31,7 @@ Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 a
 - `seq`: set ONLY by the server, on accepted board operations. One integer counter per room, starts at 1, +1 per accepted operation. Null otherwise.
 - `ts`: server time in epoch seconds (float), set on every message the server sends.
 - Errors: the server replies `ERROR {code, text, ref_type}` to the sender only. Codes: BAD_FORMAT, NO_ROOM, BAD_PASSWORD, NAME_TAKEN, FORBIDDEN, TOO_LARGE, NOT_FOUND.
-- Users get a color from `config.USER_COLORS` (8 fixed colors) in join order. Passwords are stored as salted sha256, in memory only.
+- Users get a color from `config.USER_COLORS` (8 fixed colors) in join order. Passwords are stored as salted sha256 (never in clear text); the hash and salt are also written to the room's autosave file (E7), so a locked room stays locked after a server restart.
 
 ## C. Messages
 
@@ -48,6 +50,8 @@ Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 a
 | STATS | S to C | {rtt:{name:ms}, server:{clients, msgs_in, msgs_out, bytes_in, bytes_out}} | Every 2 s |
 | CURSOR | C to S, relayed to others | {x, y} in board units | Max 20 per second per client. Not logged, no seq |
 | KICK | C to S | {user} | Host only |
+| ROOM_LIST_REQUEST | C to S | {} | Allowed BEFORE joining a room (the join screen). Changes nothing; the reply goes to the sender only |
+| ROOM_LIST | S to C | {rooms:[{code, host, online, members, locked, objects, updated}]} | Reply to ROOM_LIST_REQUEST, newest `updated` first. host: username of the host or null; online: members connected now; members: every username the room remembers; locked: has a password; objects: objects on the board; updated: epoch seconds of the last change. No member names, chat or board content are included |
 | ERROR | S to C | {code, text, ref_type} | See section B |
 
 ### C2. Board operations (server side owner P3; sent by tools of P2, P3, P4 through client/ops.py send_op)
@@ -132,16 +136,16 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 4. Reconnect. NetClient retries every 2 s for up to 60 s and sends JOIN_ROOM with token and last_seq. The server keeps an offline member for 120 s (`config.REJOIN_WINDOW_S`) and answers with SYNC_DELTA, or SNAPSHOT when the gap is above MAX_DELTA. After 120 s the user joins as a new member.
 5. Disconnect detection. No frame from a client for 15 s (`config.TIMEOUT_S`) marks it offline and sends USER_LEFT with reason timeout.
 6. Undo and redo. UNDO reverts only the sender's own most recent undoable action (add or stroke, update, delete). OP_CLEAR is not undoable, but the server takes an automatic version first. A new action clears the sender's redo stack. If the target object no longer exists the server moves to the previous entry; with nothing left it replies ERROR NOT_FOUND.
-7. Autosave. Every 10 s the server writes `server_data/<room>/autosave.json`; a restarted server restores rooms from it.
-8. Rooms outlive their members. A room is never deleted while the server runs; when the last member leaves it keeps board, chat, versions and assets. The server remembers each username's color and role (`room.profiles`) and the room's host username (`room.host_name`): a user who joins again with the same name gets the same color and role, and the original host gets host back when nobody else holds it. A name whose seat is still offline (connection lost, token lost) takes that seat back; a name that is online is NAME_TAKEN.
+7. Autosave. Every 10 s the server writes `server_data/<room>/autosave.json` for every room that changed: board and seq, versions metadata, assets index, chat log, password hash and salt, host username and every member's color and role. A restarted server loads every saved room, with nobody online, and lists it in ROOM_LIST. Files from an earlier revision (without the people and chat fields) still load as open rooms.
+8. Rooms outlive their members. A room is never deleted while the server runs; when the last member leaves it keeps board, chat, versions and assets. The server remembers each username's color and role (`room.profiles`) and the room's host username (`room.host_name`): a user who joins again with the same name gets the same color and role, and the original host gets host back when nobody else holds it. A name whose seat is still offline (connection lost, token lost) takes that seat back; a name that is online is NAME_TAKEN. After a server restart the profiles, host and password come from the autosave, so a returning user gets the same role and color as before the restart.
 9. Leaving the session. Session > Disconnect (LEAVE), a kick, and an auto-reconnect that gave up (60 s, also what a stopped server looks like) all end in `NetClient.disconnected(reason)`. The client then calls `app.reset_session()` and shows the connect dialog, pre-filled with the last server, room code and username, with the reason. The next join starts from `last_seq` 0 and a full SNAPSHOT.
 
 ## F. Python interfaces between owners
 
 ### Server
 
-- `server/dispatcher.py` (P1): decorator `@handler('TYPE')` on `fn(session, msg)`. `session.member` has name, role, color, token; `session.room`; `session.send(type, payload, **env)`; `session.send_error(code, text, ref_type)`.
-- `server/rooms.py` (P1): Room has `.code`, `.members` (name to Member), `.lock` (RLock), `.board` (attached by P3), `.chat` (attached by P4), `.assets` (P3), `.broadcast(type, payload, exclude=None, **env)` and `.send_to(name, type, payload, **env)`. env may carry op_id, seq, user. Hooks run in registration order: `rooms.on_room_created(fn(room))`, `rooms.on_member_joined(fn(room, member, rejoin, last_seq))`, `rooms.on_member_left(fn(room, member))`.
+- `server/dispatcher.py` (P1): decorator `@handler('TYPE')` on `fn(session, msg)`. Before join a connection may send only CREATE_ROOM, JOIN_ROOM, PONG and ROOM_LIST_REQUEST; anything else gets ERROR NO_ROOM. `session.member` has name, role, color, token; `session.room`; `session.send(type, payload, **env)`; `session.send_error(code, text, ref_type)`.
+- `server/rooms.py` (P1): Room has `.code`, `.members` (name to Member), `.lock` (RLock), `.board` (attached by P3), `.chat` (attached by P4), `.assets` (P3), `.broadcast(type, payload, exclude=None, **env)` and `.send_to(name, type, payload, **env)`. env may carry op_id, seq, user. Hooks run in registration order: `rooms.on_room_created(fn(room))`, `rooms.on_member_joined(fn(room, member, rejoin, last_seq))`, `rooms.on_member_left(fn(room, member))`. `Room.summary()` is one row of ROOM_LIST and `rooms.manager.summaries()` all of them.
 - `server/presence.py` (P1): `broadcast_user_list(room)`. Call it after changing any member's role.
 - `server/permissions.py` (P4): `can(role, action) -> bool`. Actions: draw, undo, upload, version_save, chat, cursor, clear, version_restore, set_role, kick.
 - `server/board_state.py` (P3): BoardState with `.objects` (ordered dict), `.seq`, `.log`, `.apply(envelope)`, `.snapshot_payload()`, `.delta(from_seq)`.
@@ -149,7 +153,7 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 ### Client
 
 - `client/app_state.py` (P1): AppState holds `.net`, `.me` (username, role, color, room, token), `.users`, `.board`, `.canvas`, `.window`, `.pen` (dict: color, width, tool, alpha), `.active_tool` and `.toast(text)`; Qt signals `users_changed`, `dm_requested(str)` and `role_changed`. `.reset_session()` runs every `@on_session_reset` function, then clears `.me` and `.users`.
-- `client/net_client.py` (P1): NetClient(QObject) with `connect_to(host, port)`, `send(type, payload, op_id=None)`, `disconnect()`; signals `connected`, `disconnected(str)`, `reconnecting`, `reconnected`. Incoming messages reach handlers registered with `on_message`, on the GUI thread.
+- `client/net_client.py` (P1): NetClient(QObject) with `connect_to(host, port)`, `send(type, payload, op_id=None)`, `disconnect()`; module function `fetch_room_list(host, port)` returns `(rooms, error)` over a short-lived connection of its own, for the join screen; signals `connected`, `disconnected(str)`, `reconnecting`, `reconnected`. Incoming messages reach handlers registered with `on_message`, on the GUI thread.
 - `client/ops.py` (P1, frozen): `send_op(app, type, payload) -> op_id` creates the op_id, calls `app.board.apply_local(...)`, then `app.net.send(...)`. Every board change by every tool (P2, P3, P4) goes through it; nobody sends OP_* with net.send directly.
 - `client/board_model.py` (P3): BoardModel(QObject) with `.objects` (ordered dict), `.last_seq`, `.apply_local(type, payload, op_id)`, `.apply_remote(msg)`, `.load_snapshot(payload)` and signal `changed(obj_id_or_None)`.
 - `client/canvas.py` (P2): CanvasWidget with `screen_to_board(pt)`, `board_to_screen(pt)`, `snap(pt)`, `zoom`, `offset` and signal `cursor_moved(float, float)`.

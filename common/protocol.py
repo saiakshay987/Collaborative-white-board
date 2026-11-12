@@ -56,6 +56,10 @@ DM = "DM"
 CHAT_HISTORY = "CHAT_HISTORY"
 SET_ROLE = "SET_ROLE"
 
+# --- C1 (Revision 5). Room list, allowed before joining -----------------------
+ROOM_LIST_REQUEST = "ROOM_LIST_REQUEST"
+ROOM_LIST = "ROOM_LIST"
+
 # Every valid message type. The server answers anything else with BAD_FORMAT.
 MESSAGE_TYPES = frozenset([
     CREATE_ROOM, JOIN_ROOM, JOIN_OK, LEAVE, USER_LIST, USER_JOINED, USER_LEFT,
@@ -64,6 +68,7 @@ MESSAGE_TYPES = frozenset([
     SNAPSHOT, SYNC_REQUEST, SYNC_DELTA, VERSION_SAVE, VERSION_LIST, VERSIONS,
     VERSION_RESTORE, IMG_BEGIN, IMG_CHUNK, IMG_END, IMG_OK, ASSET_GET,
     CHAT, DM, CHAT_HISTORY, SET_ROLE,
+    ROOM_LIST_REQUEST, ROOM_LIST,
 ])
 
 # Messages that change the board: the client gives each an op_id, and the

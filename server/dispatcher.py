@@ -34,7 +34,10 @@ _HANDLERS = {}
 # Messages a client may send before it is a member of a room. Everything
 # else needs a room first (a client cannot chat or draw "nowhere"). PONG is
 # allowed because the heartbeat PINGs every connection, joined or not.
-_PRE_JOIN_TYPES = frozenset([protocol.CREATE_ROOM, protocol.JOIN_ROOM, protocol.PONG])
+# ROOM_LIST_REQUEST (Revision 5) is allowed because the join screen asks which
+# rooms exist BEFORE the user has picked one; it changes nothing on the server.
+_PRE_JOIN_TYPES = frozenset([protocol.CREATE_ROOM, protocol.JOIN_ROOM, protocol.PONG,
+                             protocol.ROOM_LIST_REQUEST])
 
 
 def handler(msg_type):
@@ -70,7 +73,7 @@ def dispatch(session, msg):
       1. Shape check: msg must be a dict with a string `type` and a dict
          `payload`; otherwise ERROR BAD_FORMAT.
       2. Unknown type, or a type with no registered handler: ERROR BAD_FORMAT.
-      3. Not yet in a room and not CREATE_ROOM/JOIN_ROOM: ERROR NO_ROOM.
+      3. Not yet in a room and not CREATE_ROOM/JOIN_ROOM/PONG/ROOM_LIST_REQUEST: ERROR NO_ROOM.
       4. Overwrite server-owned envelope fields (user, room, seq, ts).
       5. Call the handler. An exception inside a handler is logged and
          answered with BAD_FORMAT, so one bad message never kills the

@@ -224,6 +224,18 @@ def on_join_room(session, msg):
     _seat(session, room, name, protocol.JOIN_ROOM, password=password, token=token, last_seq=last_seq)
 
 
+@handler(protocol.ROOM_LIST_REQUEST)
+def on_room_list_request(session, msg):
+    """ROOM_LIST_REQUEST {}: answer the sender (joined or not) with ROOM_LIST {rooms:[...]}.
+
+    The dispatcher lets this one type through before CREATE/JOIN_ROOM, so the
+    join screen can show which rooms exist. It is a pure read: the reply goes
+    to the asking connection only and nothing in any room changes. Each row
+    is Room.summary(): code, host, online, members, locked, objects, updated.
+    """
+    session.send(protocol.ROOM_LIST, {"rooms": rooms.manager.summaries()})
+
+
 @handler(protocol.LEAVE)
 def on_leave(session, msg):
     """LEAVE {}: clean exit. The seat is removed and the others get USER_LEFT.
