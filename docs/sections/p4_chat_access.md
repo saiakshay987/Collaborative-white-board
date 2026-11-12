@@ -20,6 +20,8 @@ Files of this section: `server/permissions.py`, `server/chat.py`, `client/chat_p
 | `cursor` (CURSOR) | yes | yes | yes |
 | `clear` (OP_CLEAR) | yes | no | no |
 | `version_restore` (VERSION_RESTORE) | yes | no | no |
+| `version_delete` (VERSION_DELETE) | yes | no | no |
+| `version_rename` (VERSION_RENAME) | yes | no | no |
 | `set_role` (SET_ROLE) | yes | no | no |
 | `kick` (KICK) | yes | no | no |
 

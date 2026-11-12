@@ -7,6 +7,10 @@ What the panel shows and does:
     Save      VERSION_SAVE {name}: asks for a name (default "Version HH:MM:SS"); host and editor
     Restore   VERSION_RESTORE {id}: host only, after a confirmation; the server first saves the
               current board as 'before restore <name>' and then sends a SNAPSHOT to everybody
+    Rename    VERSION_RENAME {id, name}: host only; asks for the new name (pre-filled, 1-60 characters)
+    Delete    VERSION_DELETE {id}: host only, after a confirmation; the version is gone for everybody
+              (Restore, Rename and Delete are also in the right-click menu of a version; all three
+              are disabled for editors and viewers, with a tooltip that says why)
     Undo/Redo UNDO / REDO {} through ops.send_op, like Ctrl+Z / Ctrl+Y (host and editor)
     footer    object count, seq and the board checksum of THIS client. When two clients (and the
               server) are at the same seq and nothing is pending, the checksums must be equal:
@@ -31,8 +35,8 @@ import time
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                             QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-                             QWidget)
+                             QMenu, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+                             QVBoxLayout, QWidget)
 
 from common import protocol
 from client import ops
@@ -42,6 +46,8 @@ REFRESH_MS = 1000                       # footer refresh; also the longest the c
 CHECKSUM_SHOWN = 12                     # hex characters of the sha1 that are displayed
 COLUMNS = ("Name", "By", "Time", "Objects")
 EDIT_ROLES = ("host", "editor")         # may save versions, undo and redo (contract C4)
+MAX_NAME_LEN = 60                       # longest version name the server accepts for a rename (contract C3)
+HOST_ONLY_TIP = "Only the host can %s a version"   # tooltip of a disabled button / menu entry
 AUTO_NAME_RESTORE = "before restore "   # the names the server gives to its automatic versions
 AUTO_NAME_CLEAR = "before clear"
 
@@ -197,6 +203,38 @@ def restore_version(app, version):
     return True
 
 
+def rename_version(app, version, name):
+    """Send VERSION_RENAME for one entry (host only). Returns True if it was sent.
+
+    The name is trimmed here; an empty one, one longer than MAX_NAME_LEN, or one
+    that did not change is not sent (the server would refuse the first two).
+    """
+    if app.me.role != "host":
+        app.toast(HOST_ONLY_TIP % "rename")
+        return False
+    name = (name or "").strip()
+    if not name or name == version["name"]:
+        return False
+    if len(name) > MAX_NAME_LEN:
+        app.toast("A version name can have at most %d characters" % MAX_NAME_LEN)
+        return False
+    if app.net is None or not app.net.send(protocol.VERSION_RENAME, {"id": version["id"], "name": name}):
+        app.toast("Not connected")
+        return False
+    return True
+
+
+def delete_version(app, version):
+    """Send VERSION_DELETE for one entry (host only). Returns True if it was sent."""
+    if app.me.role != "host":
+        app.toast(HOST_ONLY_TIP % "delete")
+        return False
+    if app.net is None or not app.net.send(protocol.VERSION_DELETE, {"id": version["id"]}):
+        app.toast("Not connected")
+        return False
+    return True
+
+
 def history_step(app, type_):
     """UNDO or REDO through ops.send_op, the same path as Ctrl+Z / Ctrl+Y (the server answers with OP_* messages)."""
     if not can_edit(app):
@@ -232,7 +270,8 @@ class HistoryPanel(QWidget):
         self.save_btn = QPushButton("Save version")
         self.save_btn.setToolTip("Store a copy of the board (Ctrl+S saves with a default name)")
         self.restore_btn = QPushButton("Restore")
-        self.restore_btn.setToolTip("Host only: replace the board by the selected version. The current board is saved first.")
+        self.rename_btn = QPushButton("Rename")
+        self.delete_btn = QPushButton("Delete")
         self.undo_btn = QPushButton("Undo")
         self.undo_btn.setToolTip("Undo my last change (Ctrl+Z)")
         self.redo_btn = QPushButton("Redo")
@@ -245,7 +284,7 @@ class HistoryPanel(QWidget):
         self.footer.setToolTip("Same seq and no pending operations on two clients: the checksums must be equal")
 
         buttons = QVBoxLayout()
-        for button in (self.save_btn, self.restore_btn, self.undo_btn, self.redo_btn):
+        for button in (self.save_btn, self.restore_btn, self.rename_btn, self.delete_btn, self.undo_btn, self.redo_btn):
             buttons.addWidget(button)
         buttons.addStretch(1)
         top = QHBoxLayout()
@@ -258,6 +297,10 @@ class HistoryPanel(QWidget):
 
         self.save_btn.clicked.connect(self.on_save)
         self.restore_btn.clicked.connect(self.on_restore)
+        self.rename_btn.clicked.connect(lambda: self.on_rename())
+        self.delete_btn.clicked.connect(lambda: self.on_delete())
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.on_context_menu)
         self.undo_btn.clicked.connect(lambda: history_step(app, protocol.UNDO))
         self.redo_btn.clicked.connect(lambda: history_step(app, protocol.REDO))
         self.table.itemSelectionChanged.connect(self.refresh_buttons)
@@ -306,7 +349,20 @@ class HistoryPanel(QWidget):
         self.save_btn.setEnabled(edit)
         self.undo_btn.setEnabled(edit)
         self.redo_btn.setEnabled(edit)
-        self.restore_btn.setEnabled(self.app.me.role == "host" and self.selected_version() is not None)
+        host = self.app.me.role == "host"
+        chosen = self.selected_version() is not None
+        for button, verb in ((self.restore_btn, "restore"), (self.rename_btn, "rename"), (self.delete_btn, "delete")):
+            button.setEnabled(host and chosen)
+            button.setToolTip(self.action_tip(verb, host))
+
+    @staticmethod
+    def action_tip(verb, host):
+        """Tooltip of the Restore / Rename / Delete button or menu entry: what it does, or why it is disabled."""
+        if not host:
+            return HOST_ONLY_TIP % verb
+        return {"restore": "Replace the board by the selected version. The current board is saved first.",
+                "rename": "Give the selected version another name",
+                "delete": "Delete the selected version for everybody"}[verb]
 
     # -- buttons ---------------------------------------------------------------
 
@@ -327,6 +383,47 @@ class HistoryPanel(QWidget):
             "so this can be reversed." % (version["name"], version["count"], AUTO_NAME_RESTORE, version["name"]))
         if answer == QMessageBox.Yes:
             restore_version(self.app, version)
+
+    def on_rename(self, version=None):
+        """Rename: ask for the new name (pre-filled with the old one), then send VERSION_RENAME."""
+        version = version if isinstance(version, dict) else self.selected_version()
+        if version is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename version", "New name (1-%d characters):" % MAX_NAME_LEN,
+                                        text=version["name"])
+        if ok:
+            rename_version(self.app, version, name)
+
+    def on_delete(self, version=None):
+        """Delete: confirm, then send VERSION_DELETE for the selected version."""
+        version = version if isinstance(version, dict) else self.selected_version()
+        if version is None:
+            return
+        answer = QMessageBox.question(
+            self, "Delete version",
+            "Delete version '%s'?\n\nThis removes it for everybody and cannot be undone." % version["name"])
+        if answer == QMessageBox.Yes:
+            delete_version(self.app, version)
+
+    def on_context_menu(self, pos):
+        """Right-click on a version: select it and show Restore / Rename / Delete (disabled, with a tooltip, unless host)."""
+        item = self.table.itemAt(pos)
+        if item is None:
+            return
+        self.table.selectRow(item.row())
+        version = self.selected_version()
+        if version is None:
+            return
+        host = self.app.me.role == "host"
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        for verb, slot in (("restore", self.on_restore), ("rename", self.on_rename), ("delete", self.on_delete)):
+            action = menu.addAction(verb.capitalize())
+            action.setEnabled(host)
+            action.setToolTip(self.action_tip(verb, host))
+            action.triggered.connect(lambda _checked=False, s=slot: s())
+        self.context_menu = menu                # kept so a test (or a debugger) can look at it
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     # -- footer ----------------------------------------------------------------
 
