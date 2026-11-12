@@ -82,6 +82,7 @@ from PyQt5.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLa
                              QLineEdit, QMessageBox, QTextBrowser, QVBoxLayout)
 
 from client import ops, registry, toolbar
+from client.canvas import on_page
 from client.tools import shape_tools
 from common import config, protocol
 
@@ -324,10 +325,15 @@ def _snap(canvas, x, y):
 
 
 def _check_on_board(*points):
-    """Raise CommandError if a point lies outside the 4000 x 3000 board (contract D)."""
+    """Raise CommandError if a point lies outside the page (0..BOARD_W x 0..BOARD_H, contract D).
+
+    The points are the ones the shape is built from (both end points of a
+    line, both corners of a box), so a shape that would stick out of the
+    page on any side is refused before anything is sent.
+    """
     for p in points:
-        if not (0 <= p.x() <= config.BOARD_W and 0 <= p.y() <= config.BOARD_H):
-            raise CommandError("(%g, %g) is outside the board (0-%d, 0-%d)"
+        if not on_page(p):
+            raise CommandError("(%g, %g) is outside the page: x must be 0-%d and y 0-%d"
                                % (p.x(), p.y(), config.BOARD_W, config.BOARD_H))
 
 

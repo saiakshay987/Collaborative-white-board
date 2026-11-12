@@ -35,6 +35,10 @@ Shift rules only use max/abs of grid multiples, so a constrained shape is
 still on the grid. The server
 therefore only ever stores snapped values (contract D).
 
+Page rule: the canvas only forwards a press that starts on the page and
+clamps every point to it, and _end_point keeps the Shift-constrained end on
+the page too (canvas.limit_to_page), so a shape never leaves the page.
+
 Escape (canvas.cancel_tool -> cancel()) drops the rubber band; nothing is
 sent. The command bar (shortcuts.py) builds shapes with the same build()
 and sends them with send_shape(), so typed and dragged shapes are identical.
@@ -49,6 +53,7 @@ import math
 from PyQt5.QtCore import QPointF, Qt
 
 from client import ops, registry
+from client.canvas import limit_to_page
 from client.tools.pen_tool import _can_draw, _clamp_width
 from common import kinds_draw, protocol
 
@@ -135,10 +140,15 @@ class _ShapeTool:
                 "width": _clamp_width(app.pen.get("width", self.pen_defaults["width"]))}
 
     def _end_point(self, p, ev):
-        """End point of the drag: p, constrained when Shift is held."""
-        if ev.modifiers() & Qt.ShiftModifier:
-            return self.constrain(self._start, p)
-        return QPointF(p)
+        """End point of the drag: p, constrained when Shift is held, always on the page.
+
+        The canvas already clamps p to the page, but the Shift rules can
+        push the point out again (a 45 degree line or a square grows to the
+        larger of |dx| and |dy|). limit_to_page shortens the whole offset
+        by one factor, so the line keeps its angle and the box stays square.
+        """
+        end = self.constrain(self._start, p) if ev.modifiers() & Qt.ShiftModifier else QPointF(p)
+        return limit_to_page(self._start, end)
 
     def _is_click(self):
         """True when the drag was too short to be a shape (both directions under MIN_DRAG)."""

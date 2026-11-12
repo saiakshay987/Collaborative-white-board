@@ -29,12 +29,28 @@ So painting never waits on the network and the GUI thread never blocks.
 Mouse input goes the other way: press/move/release are converted to board
 units (snapped when snapping is on) and handed to app.active_tool, which
 builds the operation and sends it through client/ops.py.
+
+The page rule
+-------------
+The page is the rectangle 0..BOARD_W x 0..BOARD_H and nothing may leave it:
+
+    * objects are CLIPPED to the page when painted (setClipRect), so even an
+      object that somehow lies partly outside never shows outside;
+    * a press that starts outside the page is NOT forwarded to the tool, and
+      the pointer is a "not allowed" cursor there for every drawing tool;
+    * every point a tool receives is CLAMPED to the page edge (clamp_point),
+      so a drag that leaves the page just slides along the edge;
+    * clamp_point / clamp_rect / limit_to_page below are the ONE place where
+      this rule is written. Tools (shapes, select) import and reuse them.
+
+The server enforces the same rule on what it accepts (common/kinds_*.py),
+because a client can never be trusted to have clamped anything.
 """
 
 import math
 import traceback
 
-from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt, pyqtSignal
+from PyQt5.QtCore import QLineF, QPointF, QRectF, QSizeF, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor, QPainter, QPen
 from PyQt5.QtWidgets import QLabel, QWidget
 
@@ -49,7 +65,7 @@ ZOOM_STEP = 1.15
 # Colors of the background outside the page, the page and its grid.
 OUTSIDE_COLOR = QColor("#d6d6d6")
 PAGE_COLOR = QColor("#ffffff")
-PAGE_BORDER_COLOR = QColor("#9e9e9e")
+PAGE_BORDER_COLOR = QColor("#616161")
 GRID_COLOR = QColor("#ececec")
 
 # Grid lines closer than this on screen (pixels) are skipped: they would only
@@ -62,6 +78,74 @@ CULL_MARGIN = 30.0
 
 # Margin (pixels) left around the page by fit_page().
 FIT_MARGIN = 20
+
+# Soft shadow under the page: SHADOW_STEPS translucent rectangles, each
+# SHADOW_GROW pixels bigger than the previous one, shifted by SHADOW_SHIFT
+# (right, down), so the edge fades out. Alpha is per rectangle and adds up.
+SHADOW_STEPS = 7
+SHADOW_GROW = 1.6
+SHADOW_SHIFT = (2.0, 3.0)
+SHADOW_ALPHA = 13
+
+# Width (pixels) of the page border line.
+BORDER_PX = 2
+
+
+# ------------------------------------------------------------ the page rule
+# The only place where "stay inside the page" is written down. All of these
+# work in board units and never modify their argument.
+
+def page_rect():
+    """The page as a QRectF in board units: (0, 0) to (BOARD_W, BOARD_H)."""
+    return QRectF(0, 0, config.BOARD_W, config.BOARD_H)
+
+
+def on_page(pt):
+    """True when board point pt lies on the page (the edges count as inside)."""
+    return 0 <= pt.x() <= config.BOARD_W and 0 <= pt.y() <= config.BOARD_H
+
+
+def clamp_point(pt):
+    """Return pt (QPointF) moved to the nearest point of the page."""
+    return QPointF(max(0.0, min(float(config.BOARD_W), pt.x())),
+                   max(0.0, min(float(config.BOARD_H), pt.y())))
+
+
+def clamp_rect(rect):
+    """Return rect (QRectF, normalized) moved, and shrunk only if too big, to lie fully on the page.
+
+    Used for anything with a size: a box that is dragged past an edge is
+    pushed back so it keeps its size; one bigger than the page is cut to
+    the page size.
+    """
+    rect = rect.normalized()
+    w = min(rect.width(), float(config.BOARD_W))
+    h = min(rect.height(), float(config.BOARD_H))
+    x = max(0.0, min(rect.x(), config.BOARD_W - w))
+    y = max(0.0, min(rect.y(), config.BOARD_H - h))
+    return QRectF(x, y, w, h)
+
+
+def limit_to_page(start, end):
+    """Return end pulled back TOWARD start until it is on the page, keeping the direction.
+
+    start must be on the page. Clamping x and y separately would bend a
+    45 degree line or a square (Shift) when only one coordinate hits the
+    edge. Instead the whole offset (dx, dy) is shortened by one common
+    factor t <= 1, so the angle and the proportions stay exactly as they were.
+    """
+    dx, dy = end.x() - start.x(), end.y() - start.y()
+    t = 1.0
+    if dx > 0:
+        t = min(t, (config.BOARD_W - start.x()) / dx)
+    elif dx < 0:
+        t = min(t, (0.0 - start.x()) / dx)
+    if dy > 0:
+        t = min(t, (config.BOARD_H - start.y()) / dy)
+    elif dy < 0:
+        t = min(t, (0.0 - start.y()) / dy)
+    t = max(0.0, t)
+    return clamp_point(QPointF(start.x() + dx * t, start.y() + dy * t))
 
 
 def _num(value, default=0.0):
@@ -148,6 +232,7 @@ class CanvasWidget(QWidget):
         self._space_down = False     # Space held: left-drag pans instead of drawing
         self._tool_pressed = False   # the active tool got on_press and awaits on_release
         self._cursor_tool = None     # tool whose cursor is currently shown
+        self._forbidden = False      # the "not allowed" cursor is shown (pointer off the page)
         self._bounds_cache = {}      # obj_id -> QRectF (or None) for culling
         self._fitted = False         # fit_page() already ran once on first show
 
@@ -298,31 +383,55 @@ class CanvasWidget(QWidget):
         painter = QPainter(self)
         try:
             painter.fillRect(self.rect(), OUTSIDE_COLOR)
+            self._paint_page_shadow(painter)      # in screen pixels, before the transform
 
             # screen = board * zoom + offset
             painter.translate(self.offset)
             painter.scale(self.zoom, self.zoom)
 
-            page = QRectF(0, 0, config.BOARD_W, config.BOARD_H)
+            page = page_rect()
             visible = self.visible_board_rect()
             painter.fillRect(page, PAGE_COLOR)
             if self.show_grid:
                 self._paint_grid(painter, page.intersected(visible))
-            border = QPen(PAGE_BORDER_COLOR)
-            border.setCosmetic(True)  # 1 screen pixel whatever the zoom
-            painter.setPen(border)
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(page)
 
             painter.setRenderHint(QPainter.Antialiasing, True)
             board = getattr(self.app, "board", None)
             if board is not None:
                 objects = self._visible_objects(board.objects, visible)
                 ctx = {"canvas": self, "zoom": self.zoom, "visible": visible}
+                # Clip to the page: nothing of an object may show outside it.
+                painter.save()
+                painter.setClipRect(page)
                 render.render_board(painter, objects, ctx)
+                painter.restore()
+
+            # The border goes on top of the objects so ink at the edge never hides it.
+            border = QPen(PAGE_BORDER_COLOR)
+            border.setWidth(BORDER_PX)
+            border.setCosmetic(True)  # BORDER_PX screen pixels whatever the zoom
+            painter.setPen(border)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(page)
             self._paint_tool_overlay(painter)
         finally:
             painter.end()
+
+    def _paint_page_shadow(self, painter):
+        """Draw a soft drop shadow around the page, in screen pixels (painter not transformed yet).
+
+        Several nearly transparent rectangles of growing size are stacked;
+        where they overlap the shadow is darkest (next to the page) and it
+        fades to nothing outwards. The page is painted over the middle.
+        """
+        top_left = self.board_to_screen(QPointF(0, 0))
+        base = QRectF(top_left, QSizeF(config.BOARD_W * self.zoom, config.BOARD_H * self.zoom))
+        base.translate(SHADOW_SHIFT[0], SHADOW_SHIFT[1])
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, SHADOW_ALPHA))
+        for i in range(1, SHADOW_STEPS + 1):
+            grow = i * SHADOW_GROW
+            painter.drawRect(base.adjusted(-grow, -grow, grow, grow))
 
     def _paint_tool_overlay(self, painter):
         """Let the active tool draw local-only feedback on top of the board.
@@ -417,9 +526,33 @@ class CanvasWidget(QWidget):
 
     # ------------------------------------------------------------ mouse input
     def _event_point(self, ev):
-        """Board point of a mouse event: converted, snapped if on, one decimal (contract D)."""
+        """Board point of a mouse event: converted, snapped if on, one decimal, clamped to the page.
+
+        Clamping is the LAST step, so a tool never sees a point outside the
+        page: a drag that leaves the page continues along the edge.
+        """
         p = self.snap(self.screen_to_board(ev.localPos()))
-        return QPointF(round(p.x(), 1), round(p.y(), 1))
+        return clamp_point(QPointF(round(p.x(), 1), round(p.y(), 1)))
+
+    def _is_drawing_tool(self):
+        """True when the active tool makes ink or objects (everything except the select tool)."""
+        tool = getattr(self.app, "active_tool", None)
+        return tool is not None and getattr(tool, "group", None) != "select"
+
+    def _update_page_cursor(self, ev):
+        """Show the "not allowed" cursor while a drawing tool is over the grey area outside the page.
+
+        Back on the page the tool's own cursor returns. Space-panning shows
+        its hand cursor everywhere, so it is left alone here.
+        """
+        outside = (not on_page(self.screen_to_board(ev.localPos()))
+                   and self._is_drawing_tool() and not self._space_down)
+        if outside:
+            self.setCursor(Qt.ForbiddenCursor)
+            self._forbidden = True
+        elif self._forbidden:
+            self._forbidden = False
+            self._update_cursor()
 
     def _call_tool(self, method, ev):
         """Call app.active_tool.<method>(canvas, p, ev) if there is an active tool.
@@ -469,6 +602,11 @@ class CanvasWidget(QWidget):
             self._update_cursor()
             return
         if btn == Qt.LeftButton or btn == Qt.RightButton:
+            # A press that starts outside the page does nothing at all: the
+            # tool is not told, and since _tool_pressed stays False the
+            # release is not forwarded either.
+            if not on_page(self.screen_to_board(ev.localPos())):
+                return
             self._tool_pressed = True
             self._call_tool("on_press", ev)
 
@@ -485,6 +623,7 @@ class CanvasWidget(QWidget):
             return
         if getattr(self.app, "active_tool", None) is not self._cursor_tool:
             self._update_cursor()
+        self._update_page_cursor(ev)
         self._call_tool("on_move", ev)
 
     def mouseReleaseEvent(self, ev):

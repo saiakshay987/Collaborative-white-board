@@ -52,3 +52,18 @@ Stroke traffic only (drawing minus hover baseline, "Out" side):
 ### Discussion
 
 _To be written from the numbers above._
+
+## 2. The page boundary
+
+The page is `0..BOARD_W x 0..BOARD_H` (4000 x 3000). Nothing may be drawn outside it, and the rule is written in one place per side of the connection:
+
+**Client (`client/canvas.py`).** Three helpers hold the rule: `clamp_point` (nearest point of the page), `clamp_rect` (push a box back inside, keeping its size) and `limit_to_page` (shorten a drag by one common factor, so a Shift 45 degree line or a square keeps its shape at the edge). The canvas uses them like this:
+
+- a press that starts outside the page is not forwarded to the tool, so nothing happens;
+- every point a tool receives is clamped, so a drag that leaves the page slides along the edge;
+- objects are painted with a clip rectangle on the page, then the border is drawn on top, over a soft shadow;
+- over the grey area a drawing tool gets the "not allowed" cursor;
+- the select tool limits a move with `clamp_rect` (the object stops at the edge) and a resize with the clamped corner;
+- the command bar refuses coordinates off the page with a message.
+
+**Server side (`common/kinds_draw.py`).** The server never sees the clamping, so it must not trust it. `models.validate_obj` runs the `limits` of each kind, which now bound `x1/x2/y1/y2` and `x/y/w/h` to the page. A limit holds one field only, so `check()` also tests `x + w`, `y + h` and every stroke point; the client runs it before sending.
