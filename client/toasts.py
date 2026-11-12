@@ -295,7 +295,7 @@ def play(name):
     if _muted:
         return
     effect = _load_effects().get(name)
-    if effect is None or effect.status() == QSoundEffect.Error:
+    if effect is None or effect.status() != QSoundEffect.Ready:
         QApplication.beep()
         return
     effect.play()
