@@ -28,13 +28,15 @@ The ClientHandler object is the `session` that every @handler receives
 session.send_error(...).
 """
 
+import argparse
 import socket
+import sys
 import threading
 import time
 import traceback
 from collections import deque
 
-from common import config, framing, protocol
+from common import config, framing, netinfo, protocol
 from server import dispatcher, presence, rooms
 
 # How often (seconds) the accept loop wakes up from accept() to check whether
@@ -218,7 +220,11 @@ class Server:
     """Listening socket, the accept loop and the set of live client handlers."""
 
     def __init__(self, host="0.0.0.0", port=config.PORT):
-        """Remember where to listen; nothing is opened yet."""
+        """Remember where to listen; nothing is opened yet.
+
+        host stays "0.0.0.0" (all interfaces) for the real server; see
+        start() for why localhost would make the server unreachable.
+        """
         self.host = host
         self.port = port
         self.sock = None
@@ -229,12 +235,28 @@ class Server:
     def start(self):
         """Create, bind and listen on the TCP socket.
 
+        Why "0.0.0.0" and never "localhost"/"127.0.0.1": binding a specific
+        address makes the OS accept connections ONLY on that address.
+        127.0.0.1 is the loopback interface, which no other computer can
+        reach, so a server bound to it works on the host's own screen and
+        silently refuses every friend. 0.0.0.0 means "all local addresses":
+        Wi-Fi, Ethernet, hotspot. Clients still need the right IP of the
+        interface they share with us (see print_listen_info).
+
         SO_REUSEADDR lets the server restart at once on the same port
-        instead of waiting for old connections in TIME_WAIT. Binding
-        0.0.0.0 accepts connections on every interface (the LAN).
+        instead of failing with "address already in use" while old
+        connections sit in TIME_WAIT. Windows is the exception: there
+        SO_REUSEADDR means something different and dangerous, it lets a
+        SECOND server bind the same port, so clients would reach one of the
+        two servers at random (and "room not found" for the other one's
+        rooms). On Windows we therefore ask for exclusive use instead, which
+        makes a second server fail loudly with "address already in use".
         """
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if sys.platform == "win32":
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.host, self.port))
         self.sock.listen(32)  # backlog: connections waiting for accept()
         self.sock.settimeout(ACCEPT_POLL_S)
@@ -298,3 +320,82 @@ class Server:
         for c in clients:
             c.join(timeout=1.0)
         print("[server] stopped (%d client(s) closed)" % len(clients))
+
+
+# --- command line --------------------------------------------------------------
+
+def print_listen_info(port):
+    """Print every IPv4 address of this PC and which one friends should use.
+
+    Typical output on a laptop sharing a phone hotspot:
+
+        This PC's IPv4 addresses:
+          Wi-Fi             192.168.43.57   <- likely (Wi-Fi / hotspot)
+          vEthernet (WSL)   172.28.80.1     (virtual adapter: other PCs cannot reach it)
+        Clients should connect to: 192.168.43.57 : 5050
+
+    Network note, important for the viva: many campus / guest Wi-Fi networks
+    enable "client isolation" (AP isolation). The access point then refuses
+    to forward frames between two Wi-Fi clients, so a laptop can reach the
+    internet but not the laptop next to it, and every connect attempt just
+    times out even though the IP and the firewall are right. A phone hotspot
+    or a router without isolation does not do this, which is why the lab
+    uses a hotspot.
+    """
+    addresses = netinfo.local_addresses()
+    print("This PC's IPv4 addresses:")
+    if not addresses:
+        print("  (none found)")
+    width = max([len(a.name) for a in addresses] + [1])
+    for a in addresses:
+        if a.likely:
+            note = "<- likely (Wi-Fi / hotspot)" if a.wifi else "<- likely"
+        else:
+            note = "(%s)" % a.note if a.note else ""
+        print("  %-*s  %-15s %s" % (width, a.name, a.ip, note))
+    best = netinfo.likely_address(addresses)
+    if best is None:
+        print("No usable network address: connect this PC to the hotspot / Wi-Fi first.")
+    else:
+        print("Clients should connect to: %s : %d" % (best.ip, port))
+
+
+def main(argv=None):
+    """Entry point: parse --port, start the server, run until Ctrl+C.
+
+    Usage: python run_server.py [--port N]     (a bare "5050" still works)
+    """
+    # Static import inside the function: registers every @handler and hook
+    # (bootstrap.py). Done here, not at the top of the file, so that
+    # importing server.server for ClientHandler stays cheap and cycle-free.
+    import server.bootstrap  # noqa: F401
+
+    parser = argparse.ArgumentParser(description="LAN whiteboard server")
+    parser.add_argument("legacy_port", nargs="?", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--port", type=int, default=None,
+                        help="TCP port to listen on (default %d)" % config.PORT)
+    args = parser.parse_args(argv)
+    port = args.port if args.port is not None else (args.legacy_port or config.PORT)
+    if not 1 <= port <= 65535:
+        parser.error("port must be between 1 and 65535")
+
+    srv = Server("0.0.0.0", port)  # explicitly all interfaces, never localhost
+    try:
+        srv.start()
+    except OSError as exc:
+        print("Cannot listen on port %d: %s" % (port, exc))
+        print("Is another server already running? Try: python run_server.py --port %d" % (port + 1))
+        sys.exit(1)
+    print("Whiteboard server listening on 0.0.0.0:%d (all interfaces)" % port)
+    print_listen_info(port)
+    print("Press Ctrl+C to stop.")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        srv.stop()
+
+
+if __name__ == "__main__":
+    main()
