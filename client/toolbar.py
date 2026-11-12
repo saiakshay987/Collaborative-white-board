@@ -5,6 +5,18 @@ Registered with registry.register_panel as the "tools" panel in the LEFT
 dock area (contract G). main_window calls the factory once while it builds
 the window, so the dock is created after every module has been imported.
 
+Text format bar
+---------------
+FormatBar (below the pen controls) appears while the text or sticky tool is
+active, or while the select tool has a text/sticky selected. Font, size
+(8-96 board units), text color, bold / italic / underline and left / center /
+right (a sticky also gets a background palette of 8 colors plus "More...").
+With an object selected, each change is sent as OP_UPDATE {obj_id, set:{...}}
+through ops.send_op; with no selection it sets the format of the NEXT new
+text / sticky (text_tool.set_new_default). The bar polls the active tool
+every FORMAT_SYNC_MS on the GUI thread (like the dock's tool timer) so it also
+follows selections made on the canvas and edits made by other users.
+
 What the dock contains
 ----------------------
 Tools       One checkable button per class in registry.TOOLS, grouped by
@@ -55,12 +67,13 @@ operation and answers ERROR FORBIDDEN.
 """
 
 from PyQt5.QtCore import QRectF, QSize, Qt, QTimer
-from PyQt5.QtGui import QColor, QPainter, QPen
-from PyQt5.QtWidgets import (QButtonGroup, QColorDialog, QGridLayout, QGroupBox,
-                             QHBoxLayout, QLabel, QSizePolicy, QSlider, QToolButton,
+from PyQt5.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen
+from PyQt5.QtWidgets import (QButtonGroup, QColorDialog, QComboBox, QGridLayout, QGroupBox,
+                             QHBoxLayout, QLabel, QSizePolicy, QSlider, QSpinBox, QToolButton,
                              QVBoxLayout, QWidget)
 
-from client import registry
+from client import ops, registry, render_text
+from common import kinds_text, protocol
 
 # 12 palette colors, '#rrggbb' as the contract requires for object colors.
 PALETTE = (
@@ -82,6 +95,16 @@ SYNC_MS = 200
 
 VIEWER_HINT = ("View only: the host made you a viewer.\n"
                "You can pan, zoom and chat, but not draw.")
+
+# Format bar: fonts offered (those installed on this machine; Windows has all of them),
+# the sticky background palette (the same 8 colors the sticky tool cycles through), and
+# how often (ms) the bar re-reads the active tool / selection.
+FORMAT_FONTS = ("Segoe UI", "Arial", "Calibri", "Times New Roman", "Consolas",
+                "Comic Sans MS", "Courier New", "Verdana", "Georgia", "Tahoma")
+STICKY_COLORS = ("#fff176", "#ffab91", "#a5d6a7", "#90caf9", "#f48fb1", "#ce93d8",
+                 "#ffe082", "#e0e0e0")
+FORMAT_SYNC_MS = 150
+ALIGN_BUTTONS = (("left", "L", "Align left"), ("center", "C", "Center"), ("right", "R", "Align right"))
 
 
 def _tool_tooltip(cls):
@@ -164,6 +187,288 @@ class WidthPreview(QWidget):
             painter.end()
 
 
+class FormatBar(QGroupBox):
+    """Format controls for text and sticky objects (see "Text format bar" in the module doc).
+
+    It has two modes, chosen every refresh from the active tool:
+      * the select tool has a text/sticky selected: the controls show that object and
+        every change is sent as OP_UPDATE {obj_id, set:{field: value}} via ops.send_op;
+      * the text or sticky tool is active, nothing selected: the controls show the
+        format of the NEXT new object and a change only updates those defaults.
+    Hidden in every other case. All of it runs on the GUI thread.
+    """
+
+    def __init__(self, app, dock):
+        """Build the controls (font, size, color, B/I/U, alignment, sticky background) and start the poll timer."""
+        super().__init__("Text format")
+        self.app = app
+        self._dock = dock             # the ToolDock: text color of a new text is app.pen's color
+        self._shown = None            # what the controls show now, so refresh() skips no-ops
+        self._ink_color = "#000000"   # text color currently shown (start value of the dialog)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(6)
+
+        # Font family. A user choice arrives through `activated` (programmatic changes
+        # made by refresh() do not emit it, so nothing is sent by accident).
+        self._font = QComboBox()
+        self._fill_fonts()
+        self._font.activated.connect(self._on_font)
+        v.addWidget(self._font)
+
+        # Size (board units) and text color.
+        row = QHBoxLayout()
+        self._size = QSpinBox()
+        self._size.setRange(kinds_text.SIZE_MIN, kinds_text.SIZE_MAX)
+        self._size.setKeyboardTracking(False)      # one change per Enter / arrow, not per digit
+        self._size.setToolTip("Font size in board units (%d-%d)"
+                              % (kinds_text.SIZE_MIN, kinds_text.SIZE_MAX))
+        self._size.valueChanged.connect(self._on_size)
+        self._ink = QToolButton()
+        self._ink.setFixedSize(QSize(28, 24))
+        self._ink.setToolTip("Text color")
+        self._ink.clicked.connect(self._pick_ink)
+        row.addWidget(QLabel("Size"))
+        row.addWidget(self._size, 1)
+        row.addWidget(QLabel("Color"))
+        row.addWidget(self._ink)
+        v.addLayout(row)
+
+        # Bold / italic / underline toggles and left / center / right.
+        style_row = QHBoxLayout()
+        self._flags = {}
+        for field, text, tip in (("bold", "B", "Bold"), ("italic", "I", "Italic"),
+                                 ("underline", "U", "Underline")):
+            btn = QToolButton()
+            btn.setText(text)
+            btn.setToolTip(tip)
+            btn.setCheckable(True)
+            btn.setFixedSize(QSize(26, 24))
+            face = btn.font()
+            face.setBold(field == "bold")
+            face.setItalic(field == "italic")
+            face.setUnderline(field == "underline")
+            btn.setFont(face)
+            btn.clicked.connect(lambda checked, f=field: self._send({f: bool(checked)}))
+            self._flags[field] = btn
+            style_row.addWidget(btn)
+        style_row.addSpacing(8)
+        self._aligns = {}
+        for name, text, tip in ALIGN_BUTTONS:
+            btn = QToolButton()
+            btn.setText(text)
+            btn.setToolTip(tip)
+            btn.setCheckable(True)
+            btn.setFixedSize(QSize(26, 24))
+            btn.clicked.connect(lambda _checked, a=name: self._send({"align": a}))
+            self._aligns[name] = btn
+            style_row.addWidget(btn)
+        style_row.addStretch(1)
+        v.addLayout(style_row)
+
+        # Sticky only: background palette of 8 colors plus "More...".
+        self._bg_box = QWidget()
+        bv = QVBoxLayout(self._bg_box)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.addWidget(QLabel("Note color"))
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        self._bg_swatches = {}
+        for i, color in enumerate(STICKY_COLORS):
+            sw = QToolButton()
+            sw.setCheckable(True)
+            sw.setFixedSize(QSize(24, 24))
+            sw.setToolTip(color)
+            sw.setStyleSheet(_swatch_style(color))
+            sw.clicked.connect(lambda _checked, c=color: self._send({}, bg=c))
+            self._bg_swatches[color] = sw
+            grid.addWidget(sw, i // PALETTE_COLUMNS, i % PALETTE_COLUMNS)
+        grid.setColumnStretch(PALETTE_COLUMNS, 1)
+        bv.addLayout(grid)
+        more = QToolButton()
+        more.setText("More...")
+        more.setToolTip("Pick any background color")
+        more.clicked.connect(self._pick_bg)
+        bv.addWidget(more)
+        v.addWidget(self._bg_box)
+
+        self.hide()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.refresh)
+        self._timer.start(FORMAT_SYNC_MS)
+
+    # --------------------------------------------------------------- helpers
+    def _fill_fonts(self):
+        """List FORMAT_FONTS that are installed (all of them on Windows), each in its own face.
+
+        A QFontComboBox would list every installed font, and its model cannot be
+        trimmed, so this is a plain QComboBox. If none of the wanted fonts exist
+        (another OS), the first installed families are offered instead so the
+        control is never empty.
+        """
+        installed = QFontDatabase().families()
+        names = [name for name in FORMAT_FONTS if name in installed] or installed[:20]
+        for name in names:
+            self._font.addItem(name)
+            self._font.setItemData(self._font.count() - 1, QFont(name), Qt.FontRole)
+
+    def _show_font(self, family):
+        """Select `family` in the combo box; a family that is not listed is added (shown, not sent)."""
+        index = self._font.findText(family)
+        if index < 0:
+            self._font.addItem(family)
+            index = self._font.count() - 1
+        self._font.setCurrentIndex(index)
+
+    def _targets(self):
+        """Return the selected text/sticky objects (live dicts from BoardModel); [] if none.
+
+        Only the select tool has a selection (one object at a time); the list
+        shape lets a multi-select tool plug in without changing the senders.
+        """
+        tool = getattr(self.app, "active_tool", None)
+        if getattr(tool, "id", None) != "select":
+            return []
+        obj = tool.selected(self.app)
+        return [obj] if obj is not None and obj.get("kind") in ("text", "sticky") else []
+
+    def _kind(self, targets):
+        """Return 'text' or 'sticky' (what the bar is about), or None to hide the bar."""
+        if targets:
+            return "sticky" if any(t["kind"] == "sticky" for t in targets) else "text"
+        tool_id = getattr(getattr(self.app, "active_tool", None), "id", None)
+        return tool_id if tool_id in ("text", "sticky") else None
+
+    def _values(self, kind, targets):
+        """Return what the controls should show: an object's format, or the new-object defaults."""
+        from client.tools import text_tool  # noqa: PLC0415 (see the module doc: import order)
+
+        if targets:
+            obj = targets[0]
+            sticky = obj["kind"] == "sticky"
+            return {"font": render_text.family_of(obj), "size": int(round(render_text.size_of(obj))),
+                    "bold": render_text.flag_of(obj, "bold"),
+                    "italic": render_text.flag_of(obj, "italic"),
+                    "underline": render_text.flag_of(obj, "underline"),
+                    "align": kinds_text.get(obj, "align"),
+                    "ink": render_text.text_color_of(obj).name(),
+                    "bg": render_text.color_of(obj, kinds_text.STICKY_DEFAULTS["color"]).name()
+                    if sticky else None}
+        style = text_tool.new_object_style(kind)
+        ink = (QColor(self.app.pen.get("color", "#000000")).name() if kind == "text"
+               else style["text_color"])
+        return {"font": style["font"], "size": int(round(style["size"])), "bold": style["bold"],
+                "italic": style["italic"], "underline": style["underline"], "align": style["align"],
+                "ink": ink, "bg": text_tool.new_override("sticky", "color") if kind == "sticky" else None}
+
+    def refresh(self):
+        """Show or hide the bar and make the controls show the current object / defaults.
+
+        Called by the timer (and after every change). Does nothing when the shown
+        values are already right, so it does not disturb a control being used.
+        """
+        targets = self._targets()
+        kind = self._kind(targets)
+        if kind is None:
+            self._shown = None
+            self.hide()
+            return
+        values = self._values(kind, targets)
+        key = (kind, bool(targets), tuple(sorted(values.items(), key=lambda kv: kv[0])))
+        if key == self._shown:
+            return
+        self._shown = key
+        self.setTitle("%s format (%s)" % (kind.capitalize(), "selected" if targets else "next one"))
+
+        self._show_font(values["font"])
+        self._size.blockSignals(True)               # showing, not changing
+        self._size.setValue(values["size"])
+        self._size.blockSignals(False)
+        self._ink_color = values["ink"]             # where the color dialog starts
+        self._ink.setStyleSheet("QToolButton { background: %s; border: 1px solid #888;"
+                                " border-radius: 3px; }" % values["ink"])
+        self._ink.setToolTip("Text color %s" % values["ink"])
+        for field, btn in self._flags.items():
+            btn.setChecked(values[field])
+        for name, btn in self._aligns.items():
+            btn.setChecked(values["align"] == name)
+        self._bg_box.setVisible(kind == "sticky")
+        for color, sw in self._bg_swatches.items():
+            sw.setChecked(color == values["bg"])
+        self.show()
+
+    # --------------------------------------------------------------- sending
+    def _send(self, fields, ink=None, bg=None):
+        """Apply a format change: OP_UPDATE for the selected objects, else new-object defaults.
+
+        fields: {field: value} for the plain format fields. ink: a text color
+        ('color' of a text, 'text_color' of a sticky). bg: a sticky's background
+        ('color'). Every object is checked with kinds_text.validate first (the
+        rules the server runs), so a bad value shows a toast and sends nothing.
+        The server still checks permissions.can(role, 'draw') on every OP_UPDATE.
+        """
+        if getattr(self.app.me, "role", None) == "viewer":
+            return
+        targets = self._targets()
+        if targets:
+            for obj in targets:
+                change = dict(fields)
+                if ink is not None:
+                    change["text_color" if obj["kind"] == "sticky" else "color"] = ink
+                if bg is not None and obj["kind"] == "sticky":
+                    change["color"] = bg
+                change = {k: v for k, v in change.items() if kinds_text.get(obj, k) != v}
+                if not change:
+                    continue
+                ok, reason = kinds_text.validate(dict(obj, **change))
+                if not ok:
+                    self.app.toast("Format not changed: %s" % reason)
+                    continue
+                ops.send_op(self.app, protocol.OP_UPDATE, {"obj_id": obj["id"], "set": change})
+        else:
+            self._set_defaults(fields, ink, bg)
+        self._shown = None            # re-read at the next refresh, the board has changed
+        self.refresh()
+
+    def _set_defaults(self, fields, ink, bg):
+        """Nothing selected: remember the format for the next new text / sticky."""
+        from client.tools import text_tool  # noqa: PLC0415 (see the module doc: import order)
+
+        kind = self._kind([])
+        if kind is None:
+            return
+        defaults = dict(fields)
+        if ink is not None:
+            if kind == "text":
+                self._dock._set_color(ink)      # a new text is drawn in the pen color
+            else:
+                defaults["text_color"] = ink
+        if bg is not None and kind == "sticky":
+            defaults["color"] = bg
+        if defaults:
+            text_tool.set_new_default(kind, **defaults)
+
+    def _on_font(self, _index):
+        """The user picked a font in the combo box."""
+        self._send({"font": self._font.currentText()})
+
+    def _on_size(self, value):
+        """The user changed the size spin box (8-96)."""
+        self._send({"size": int(value)})
+
+    def _pick_ink(self):
+        """Choose the text color with QColorDialog (modal, but network and repaints keep running)."""
+        color = QColorDialog.getColor(QColor(self._ink_color), self, "Text color")
+        if color.isValid():
+            self._send({}, ink=color.name())
+
+    def _pick_bg(self):
+        """Choose a sticky background with QColorDialog."""
+        color = QColorDialog.getColor(QColor(STICKY_COLORS[0]), self, "Note color")
+        if color.isValid():
+            self._send({}, bg=color.name())
+
+
 class ToolDock(QWidget):
     """The left dock: tool buttons by group, color palette and width, remembered per tool."""
 
@@ -193,6 +498,8 @@ class ToolDock(QWidget):
         layout.addWidget(self._tools_box)
         self._pen_box = self._build_pen_controls()
         layout.addWidget(self._pen_box)
+        self._format_box = FormatBar(app, self)    # hidden until a text/sticky is involved
+        layout.addWidget(self._format_box)
         layout.addStretch(1)
 
         # Role changes come from on_message handlers on the GUI thread.
@@ -508,6 +815,7 @@ class ToolDock(QWidget):
         self._hint.setVisible(viewer)
         self._tools_box.setEnabled(not viewer)
         self._pen_box.setEnabled(not viewer)
+        self._format_box.setEnabled(not viewer)
         if viewer:
             if self.app.active_tool is not None:
                 self._last_tool_id = getattr(self.app.active_tool, "id", self._last_tool_id)

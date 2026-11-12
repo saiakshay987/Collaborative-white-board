@@ -11,8 +11,9 @@ Contract sections D, F and G. Everything here goes through the registries:
 How typing works (InlineEditor)
 -------------------------------
 A QTextEdit is laid over the canvas exactly where the object is, in the
-object's font scaled by the canvas zoom, so what you type looks like what
-everybody will see. It is a child widget of the canvas, never a dialog.
+object's font (family, bold, italic, underline, alignment) with font size =
+size x canvas zoom, so what you type looks like what everybody will see. It is
+moved, resized and re-fonted again whenever the canvas is zoomed or panned. It is a child widget of the canvas, never a dialog.
 
     Enter           finish and send          Shift+Enter  new line
     click away      finish and send          (focus lost to anything else)
@@ -31,6 +32,7 @@ at once, confirmed by the server echo):
 
     new text or sticky   OP_ADD {obj}                        (empty text: nothing is sent)
     double-click edit    OP_UPDATE {obj_id, set:{text}}      (only if the text changed)
+    format bar change    OP_UPDATE {obj_id, set:{font, size, ...}}  (sent by client/toolbar.py)
 
 The object is checked with kinds_text.validate (the same rules as the server)
 before sending. Moving and resizing are P2's select tool, not repeated here.
@@ -45,7 +47,8 @@ from PyQt5.QtGui import QColor, QPen, QTextCursor, QTextOption
 from PyQt5.QtWidgets import QFrame, QTextEdit
 
 from client import ops, registry
-from client.render_text import STICKY_PAD, STICKY_TEXT_COLOR, box_of, color_of, make_font, size_of
+from client.render_text import (STICKY_PAD, align_flag, box_of, color_of, family_of, flag_of,
+                                make_font, size_of, text_color_of, wrap_option)
 from client.tools.pen_tool import _can_draw
 from common import config, kinds_text, protocol
 
@@ -58,10 +61,15 @@ MIN_BOX_H = 30.0
 # A drag shorter than this in both directions counts as a click.
 MIN_DRAG = 2.0
 
-# Sticky tool: size of a new note and the 6 pastel background colors it cycles through.
+# Sticky tool: size of a new note and the 8 pastel background colors it cycles through
+# (the format bar in client/toolbar.py offers the same 8).
 STICKY_W = 200.0
 STICKY_H = 160.0
-STICKY_PALETTE = ("#fff176", "#ffab91", "#a5d6a7", "#90caf9", "#f48fb1", "#ce93d8")
+STICKY_PALETTE = ("#fff176", "#ffab91", "#a5d6a7", "#90caf9", "#f48fb1", "#ce93d8",
+                  "#ffe082", "#e0e0e0")
+
+# The format fields every text / sticky carries (contract D, common/kinds_text.py).
+FORMAT_FIELDS = ("font", "size", "bold", "italic", "underline", "align")
 
 # The overlay keeps at least this size on screen (pixels), even for a tiny box or low zoom.
 OVERLAY_MIN_W_PX = 80
@@ -76,6 +84,36 @@ _KEEP_EDITING = (Qt.ActiveWindowFocusReason, Qt.PopupFocusReason)
 # Index into STICKY_PALETTE of the next new sticky. Module level (not per tool
 # instance), because the select tool creates a fresh tool object on every switch.
 _next_sticky = 0
+
+
+# What the NEXT new text / sticky gets: the format bar writes here when nothing is
+# selected. Only the fields the user changed are stored; the rest come from the
+# kinds_text defaults. Module level (not per tool instance) for the same reason as
+# _next_sticky: the select tool makes a fresh tool object on every switch.
+_new_overrides = {"text": {}, "sticky": {}}
+
+
+def new_object_style(kind):
+    """Return the complete format dict a new object of `kind` ('text' or 'sticky') gets.
+
+    Keys: font, size, bold, italic, underline, align (and text_color for a
+    sticky): the kinds_text defaults overridden by the user's format bar choices.
+    """
+    defaults = kinds_text.TEXT_DEFAULTS if kind == "text" else kinds_text.STICKY_DEFAULTS
+    keys = FORMAT_FIELDS + (("text_color",) if kind == "sticky" else ())
+    style = {key: defaults[key] for key in keys}
+    style.update({k: v for k, v in _new_overrides.get(kind, {}).items() if k in style})
+    return style
+
+
+def set_new_default(kind, **fields):
+    """Remember format fields (and, for a sticky, its background `color`) for the next new `kind`."""
+    _new_overrides.setdefault(kind, {}).update(fields)
+
+
+def new_override(kind, field):
+    """Return the value the user chose for `field` of the next new `kind`, or None if none was chosen."""
+    return _new_overrides.get(kind, {}).get(field)
 
 
 def _r1(value):
@@ -98,19 +136,26 @@ class InlineEditor(QTextEdit):
     committed = pyqtSignal(str)
     cancelled = pyqtSignal()
 
-    def __init__(self, canvas, box, text, size, text_color, background, padding=0.0):
+    def __init__(self, canvas, box, text, size, text_color, background, padding=0.0, style=None):
         """Create the editor over `box` (QRectF, board units) and give it the focus.
 
         text: the initial content; size: font size in board units; text_color
         and background: QColor for the text and the editor's fill; padding: the
         space between the box edge and the text in board units, the same value
         the renderer uses, so the text does not move when the edit ends.
+        style: optional {font, bold, italic, underline, align} so the overlay
+        looks like the formatted object.
         """
         super().__init__(canvas)
         self.canvas = canvas
         self.box = QRectF(box)
         self.size_units = float(size)
         self.padding = float(padding)
+        style = style or {}
+        self.family = style.get("font")
+        self.bold = style.get("bold", False)
+        self.italic = style.get("italic", False)
+        self.underline = style.get("underline", False)
         self._done = False
         self._view = None                 # (zoom, offset x, offset y) the geometry was made for
         self.setAcceptRichText(False)     # plain text only: no pasted formatting
@@ -121,6 +166,7 @@ class InlineEditor(QTextEdit):
         self.setStyleSheet(
             "QTextEdit { background: %s; color: %s; border: 1px dashed #1565c0; padding: 0px; }"
             % (background.name(), text_color.name()))
+        self.document().setDefaultTextOption(wrap_option(align_flag(style.get("align"))))
         self.setPlainText(text)
         self.textChanged.connect(self._limit_length)
         self._sync_geometry()
@@ -146,7 +192,11 @@ class InlineEditor(QTextEdit):
         width = max(OVERLAY_MIN_W_PX, int(self.box.width() * zoom))
         height = max(OVERLAY_MIN_H_PX, int(self.box.height() * zoom))
         self.setGeometry(int(top_left.x()), int(top_left.y()), width, height)
-        self.setFont(make_font(self.size_units * zoom))
+        # Font size on screen = size x zoom. This runs again whenever the canvas is
+        # zoomed or panned (the _view check above), so the overlay keeps matching
+        # the board while the user edits.
+        self.setFont(make_font(self.size_units * zoom, self.family, self.bold,
+                               self.italic, self.underline))
         self.document().setDocumentMargin(self.padding * zoom)
 
     def _limit_length(self):
@@ -242,15 +292,16 @@ def close_open_editor(commit=True):
         editor.cancel()
 
 
-def open_editor(canvas, box, text, size, text_color, background, on_commit, padding=0.0):
+def open_editor(canvas, box, text, size, text_color, background, on_commit, padding=0.0, style=None):
     """Open an InlineEditor over box; on_commit(text) is called when it is finished with Enter or click-away.
 
     padding is the text inset in board units (STICKY_PAD for a sticky, 0 for
-    a text). Any editor still open is finished first. Returns the new editor.
+    a text); style is the optional format dict of InlineEditor. Any editor
+    still open is finished first. Returns the new editor.
     """
     global _open_editor
     close_open_editor(commit=True)
-    editor = InlineEditor(canvas, box, text, size, text_color, background, padding)
+    editor = InlineEditor(canvas, box, text, size, text_color, background, padding, style)
     editor.committed.connect(on_commit)
     _open_editor = editor
     return editor
@@ -258,8 +309,10 @@ def open_editor(canvas, box, text, size, text_color, background, on_commit, padd
 
 # --- Sending -----------------------------------------------------------------------------
 
-def add_object(app, kind, box, text, color, size):
+def add_object(app, kind, box, text, color, size, style=None):
     """Send OP_ADD for a new text or sticky object; nothing is sent for an empty text.
+
+    style: the other format fields (see new_object_style), merged into the object.
 
     The object gets an id like an op_id (contract D), is checked with
     kinds_text.validate (the rules the server runs) and goes out as ONE OP_ADD.
@@ -274,7 +327,9 @@ def add_object(app, kind, box, text, color, size):
     y = max(0.0, min(box.y(), config.BOARD_H - box.height()))
     obj = {"id": protocol.new_op_id(app.me.username or "me"), "kind": kind,
            "x": _r1(x), "y": _r1(y), "w": _r1(box.width()), "h": _r1(box.height()),
-           "text": text, "color": color, "size": size}
+           "text": text, "color": color}
+    obj.update(style or {})
+    obj["size"] = size
     ok, reason = kinds_text.validate(obj)
     if not ok:
         app.toast("%s not sent: %s" % (kind.capitalize(), reason))
@@ -320,11 +375,14 @@ def edit_object(app, canvas, obj):
         return
     obj_id, old_text = obj.get("id"), str(kinds_text.get(obj, "text") or "")
     sticky = obj.get("kind") == "sticky"
-    text_color = QColor(STICKY_TEXT_COLOR) if sticky else color_of(obj, "#000000")
+    text_color = text_color_of(obj)
     background = color_of(obj, kinds_text.STICKY_DEFAULTS["color"]) if sticky else QColor("#ffffff")
     open_editor(canvas, box_of(obj), old_text, size_of(obj), text_color, background,
                 lambda text: update_text(app, obj_id, old_text, text.strip()),
-                padding=STICKY_PAD if sticky else 0.0)
+                padding=STICKY_PAD if sticky else 0.0,
+                style={"font": family_of(obj), "bold": flag_of(obj, "bold"),
+                       "italic": flag_of(obj, "italic"), "underline": flag_of(obj, "underline"),
+                       "align": kinds_text.get(obj, "align")})
 
 
 # --- The tools ---------------------------------------------------------------------------------
@@ -375,9 +433,11 @@ class TextTool:
         color = app.pen.get("color") or "#000000"
         if not kinds_text.is_color(color):
             color = "#000000"
-        size = kinds_text.TEXT_DEFAULTS["size"]
+        style = new_object_style("text")         # the format bar's choices for the next text
+        size = style.pop("size")
         open_editor(canvas, box, "", size, QColor(color), QColor("#ffffff"),
-                    lambda text: add_object(app, "text", box, text, color, size))
+                    lambda text: add_object(app, "text", box, text, color, size, style),
+                    style=style)
 
     def cancel(self, canvas):
         """Escape: drop the box being dragged, or the open editor. Nothing was sent."""
@@ -431,17 +491,20 @@ class StickyTool:
         box = QRectF(center.x() - STICKY_W / 2, center.y() - STICKY_H / 2, STICKY_W, STICKY_H)
         box.moveTo(max(0.0, min(box.x(), config.BOARD_W - STICKY_W)),
                    max(0.0, min(box.y(), config.BOARD_H - STICKY_H)))
-        color = STICKY_PALETTE[_next_sticky % len(STICKY_PALETTE)]
-        size = kinds_text.STICKY_DEFAULTS["size"]
+        # A background chosen in the format bar wins; otherwise cycle the palette.
+        chosen = new_override("sticky", "color")
+        color = chosen or STICKY_PALETTE[_next_sticky % len(STICKY_PALETTE)]
+        style = new_object_style("sticky")
+        size = style.pop("size")
 
         def commit(text):
-            """Send the note; move to the next palette color only if it was sent."""
+            """Send the note; move to the next palette color only if it was sent (and cycling)."""
             global _next_sticky
-            if add_object(app, "sticky", box, text, color, size):
+            if add_object(app, "sticky", box, text, color, size, style) and not chosen:
                 _next_sticky += 1
 
-        open_editor(canvas, box, "", size, QColor(STICKY_TEXT_COLOR), QColor(color), commit,
-                    padding=STICKY_PAD)
+        open_editor(canvas, box, "", size, QColor(style["text_color"]), QColor(color), commit,
+                    padding=STICKY_PAD, style=style)
 
     def cancel(self, canvas):
         """Escape: forget the click, or drop the open editor. Nothing was sent."""
