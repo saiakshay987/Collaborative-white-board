@@ -6,3 +6,4 @@ build/
 dist/
 server_data/
 *.spec.bak
+.build_venv/
