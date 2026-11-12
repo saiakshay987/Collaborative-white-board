@@ -93,11 +93,14 @@ class ConnectDialog(QDialog):
     _addresses_ready = pyqtSignal(object)        # list of netinfo.Address
     _test_done = pyqtSignal(bool, str, float)    # ok, message, seconds
 
-    def __init__(self, app, parent=None, notice=None):
+    def __init__(self, app, parent=None, notice=None, prefill=None):
         """Build the tabs for AppState app (app.net must be a NetClient).
 
-        notice: optional text shown in red under the form when the dialog
-        opens, e.g. why we are back here after being kicked.
+        notice: optional text shown under the form when the dialog opens,
+        e.g. why we are back here (kicked, connection lost, left the room).
+        prefill: optional dict {server, room, username} of the session we
+        just left; the Join tab is filled with it and opened, so rejoining
+        the same room is one click (the password is never remembered).
         """
         super().__init__(parent)
         self.app = app
@@ -117,9 +120,11 @@ class ConnectDialog(QDialog):
         self._addresses_ready.connect(self._show_addresses)
         self._test_done.connect(self._show_test_result)
         self._load_remembered()
+        if prefill:
+            self._apply_prefill(prefill)
         if notice:
-            self._show_error(notice)
-            self.tabs.setCurrentIndex(1)    # a removed user would join, not host
+            self._show_notice(notice)
+            self.tabs.setCurrentIndex(1)    # a user who left would join again, not host
 
     # ----------------------------------------------------------------- layout
 
@@ -229,6 +234,21 @@ class ConnectDialog(QDialog):
         self.join_ip.setText(str(settings.value(KEY_LAST_IP, "") or ""))
         self.join_name.setText(str(settings.value(KEY_LAST_NAME, "") or ""))
 
+    def _apply_prefill(self, prefill):
+        """Fill the Join tab with the last session's server, room code and username.
+
+        Empty values leave what _load_remembered put there, and the Join tab
+        is shown because that is where the user can get back into the room.
+        """
+        if prefill.get("server"):
+            self.join_ip.setText(prefill["server"])
+        if prefill.get("room"):
+            self.join_code.setText(prefill["room"])
+        if prefill.get("username"):
+            self.join_name.setText(prefill["username"])
+        self.tabs.setCurrentIndex(1)
+        self.join_pw.setFocus()
+
     def _remember(self, ip, name):
         """Store the Join fields for next time."""
         settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
@@ -270,6 +290,12 @@ class ConnectDialog(QDialog):
     def _show_error(self, text):
         """Show text in red and enable the form for another try."""
         self.status.setStyleSheet("color: #c0392b;")
+        self.status.setText(text)
+        self._set_busy(False)
+
+    def _show_notice(self, text):
+        """Show why the join screen is back (amber, not an error) and enable the form."""
+        self.status.setStyleSheet("color: #b9770e;")
         self.status.setText(text)
         self._set_busy(False)
 

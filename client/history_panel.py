@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QInput
 
 from common import protocol
 from client import ops
-from client.registry import on_message, register_menu_action, register_panel
+from client.registry import on_message, on_session_reset, register_menu_action, register_panel
 
 REFRESH_MS = 1000                       # footer refresh; also the longest the checksum can lag behind the board
 CHECKSUM_SHOWN = 12                     # hex characters of the sha1 that are displayed
@@ -142,6 +142,12 @@ def announce(app, new_versions):
 def _on_versions(app, msg):
     """VERSIONS {versions}: store the list and announce what is new (runs on the GUI thread)."""
     announce(app, model.apply(msg.get("payload") or {}))
+
+
+@on_session_reset
+def _on_session_reset(app):
+    """The user left the room: forget the version list (the panel shows it empty)."""
+    model.reset()
 
 
 @on_message(protocol.JOIN_OK)

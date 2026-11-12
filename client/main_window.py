@@ -16,8 +16,10 @@ room code and the server address (the connection state itself is the label
 run_client.py adds). A yellow banner over the canvas says "View only" while
 my role is viewer. The window geometry is remembered with QSettings.
 
-The Session menu (Copy room code, Leave, Reconnect) only uses NetClient's
-public API: disconnect(), connect_to(), send() and its four signals. All
+The Session menu (Copy room code, Disconnect) only uses NetClient's public
+API: disconnect() and its four signals. Disconnect, a kick and a lost
+connection all end the same way: run_client.py resets the client and shows
+the join screen again. The window's close button asks first. All
 network results arrive as Qt signals on the GUI thread, so nothing here can
 block the window.
 
@@ -255,7 +257,6 @@ class MainWindow(QMainWindow):
         # reconnecting or disconnected. The window opens after JOIN_OK.
         net = app.net
         self._net_state = "connected" if net is not None and net.is_connected else "disconnected"
-        self._rejoin_pending = False  # a manual Reconnect waits for the TCP connection
         self._last_role = app.me.role  # to tell a real role change from the first JOIN_OK
         self.setWindowTitle("LAN Whiteboard")
         self.resize(1200, 800)
@@ -421,13 +422,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ session menu
 
     def _add_session_actions(self, menu):
-        """Add Copy room code, Leave and Reconnect to the Session menu."""
+        """Add Copy room code and Disconnect to the Session menu."""
         self._act_copy = menu.addAction("Copy room code")
         self._act_copy.triggered.connect(self.copy_room_code)
-        self._act_leave = menu.addAction("Leave")
+        self._act_leave = menu.addAction("Disconnect")
         self._act_leave.triggered.connect(self.leave_room)
-        self._act_reconnect = menu.addAction("Reconnect")
-        self._act_reconnect.triggered.connect(self.reconnect)
         menu.addSeparator()
 
     def copy_room_code(self):
@@ -440,57 +439,25 @@ class MainWindow(QMainWindow):
         self.app.toast("Room code %s copied." % code)
 
     def leave_room(self):
-        """Ask for confirmation, then leave the room (NetClient.disconnect).
+        """Session > Disconnect: ask for confirmation, then leave the room.
 
-        disconnect() sends LEAVE (the server removes my seat), closes the
-        connection and emits `disconnected`. The window stays open so
-        Session > Reconnect can join again.
+        NetClient.disconnect() sends LEAVE (the server removes my seat but
+        keeps the room), stops any reconnect attempt, closes the connection
+        and emits `disconnected`. run_client.py reacts to that signal: it
+        resets the whole client and shows the join screen again, pre-filled
+        with this server, room code and username. The app does not quit.
         """
         if self.app.net is None or self._net_state == "disconnected":
             return
         answer = QMessageBox.question(
-            self, "Leave room", "Leave room %s?\nYou can join again with Session > Reconnect."
-            % (self.app.me.room or ""))
+            self, "Disconnect", "Disconnect from room %s?\nThe room stays on the server; "
+            "you can join it again with the same room code." % (self.app.me.room or ""))
         if answer == QMessageBox.Yes:
             self.app.net.disconnect()
-
-    def reconnect(self):
-        """Join the room again after being disconnected or after leaving.
-
-        While connected, or while NetClient is already retrying by itself
-        (it does that every 2 s for 60 s), nothing needs doing. Otherwise
-        open a new TCP connection with connect_to(); once `connected` fires
-        (see _on_net_connected) a JOIN_ROOM for the same room and username is
-        sent. The old seat is gone by now (NetClient forgets the token when it
-        gives up or leaves), so this is a fresh join.
-        """
-        net = self.app.net
-        if net is None:
-            return
-        if self._net_state != "disconnected":
-            self.app.toast("Already connected." if self._net_state == "connected"
-                           else "Already trying to reconnect.")
-            return
-        if not net.host or not self.app.me.room:
-            self.app.toast("No room to rejoin. Restart the client to connect again.")
-            return
-        self._rejoin_pending = True
-        self.app.toast("Reconnecting to %s..." % net.host)
-        net.connect_to(net.host, net.port)
-
-    def _on_net_connected(self):
-        """TCP is up again: if Reconnect asked for it, send the JOIN_ROOM now."""
-        self._set_net_state("connected")
-        if self._rejoin_pending:
-            self._rejoin_pending = False
-            me = self.app.me
-            self.app.net.send(protocol.JOIN_ROOM, {"room": me.room, "username": me.username})
 
     def _set_net_state(self, state):
         """Remember the connection state and refresh what depends on it."""
         self._net_state = state
-        if state == "disconnected":
-            self._rejoin_pending = False   # a failed attempt must not rejoin later
         self._refresh_all()
 
     # ----------------------------------------------------- status, title, banner
@@ -512,7 +479,7 @@ class MainWindow(QMainWindow):
         self.app.users_changed.connect(self._refresh_all)   # JOIN_OK always emits it
         net = self.app.net
         if net is not None:
-            net.connected.connect(self._on_net_connected)
+            net.connected.connect(lambda: self._set_net_state("connected"))
             net.reconnected.connect(lambda: self._set_net_state("connected"))
             net.reconnecting.connect(lambda: self._set_net_state("reconnecting"))
             net.disconnected.connect(lambda _reason: self._set_net_state("disconnected"))
@@ -530,7 +497,6 @@ class MainWindow(QMainWindow):
         self._refresh_title()
         self._banner.setVisible(self.app.me.role == "viewer")
         self._act_leave.setEnabled(self._net_state != "disconnected")
-        self._act_reconnect.setEnabled(self._net_state == "disconnected")
 
     def _refresh_status(self):
         """Show "name (role) | Room CODE | host:port" in the status bar."""
@@ -554,6 +520,19 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
 
     def closeEvent(self, event):
-        """Remember the window geometry for the next start, then close."""
+        """Ask before quitting while in a room; remember the window geometry, then close.
+
+        The close button leaves the room (the app's exit path sends LEAVE),
+        so while connected the user must confirm. Without a connection
+        (the join screen is showing) there is nothing to lose and it closes
+        at once. Answering No ignores the event: the window stays open.
+        """
+        if self._net_state != "disconnected":
+            answer = QMessageBox.question(
+                self, "Quit", "Quit the whiteboard?\nYou will be disconnected from room %s."
+                % (self.app.me.room or ""))
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
         QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(GEOMETRY_KEY, self.saveGeometry())
         super().closeEvent(event)

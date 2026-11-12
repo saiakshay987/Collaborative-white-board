@@ -4,7 +4,8 @@
 Contract section G. Plain static imports (PyInstaller cannot see dynamic
 imports). The ORDER matters: hooks run in registration order, so a joining
 client gets USER_LIST (presence), then SNAPSHOT/SYNC_DELTA (P3), then
-CHAT_HISTORY (chat stays last).
+CHAT_HISTORY (chat stays last among the modules), then VERSIONS (the explicit
+registration at the bottom of this file).
 """
 
 # P1
@@ -22,3 +23,7 @@ from server import versions  # noqa: F401
 from server import assets  # noqa: F401
 # P4 (last)
 from server import chat  # noqa: F401
+
+# The last join step, registered after chat's hook so VERSIONS follows
+# CHAT_HISTORY: JOIN_OK, USER_LIST, SNAPSHOT, CHAT_HISTORY, VERSIONS.
+rooms.on_member_joined(versions.send_versions_on_join)

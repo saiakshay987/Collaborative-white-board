@@ -13,6 +13,8 @@ client so modules never import each other just to find them:
     app.pen          dict: color, width, tool, alpha
     app.active_tool  current tool instance
     app.toast(text)  short fading notification in the window corner (client/toasts.py)
+    app.reset_session()  forget the whole session (identity, users, and via
+                     registry.on_session_reset the board, chat, versions)
 
 Signals (emitted on the GUI thread):
     users_changed()      app.users was replaced
@@ -22,7 +24,7 @@ Signals (emitted on the GUI thread):
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from client import toasts
+from client import registry, toasts
 
 
 class Me:
@@ -30,6 +32,10 @@ class Me:
 
     def __init__(self):
         """Start as an anonymous, not-yet-joined user."""
+        self.reset()
+
+    def reset(self):
+        """Become anonymous again. Done in place, so everybody holding app.me stays valid."""
         self.username = None
         self.role = None
         self.color = None
@@ -70,6 +76,21 @@ class AppState(QObject):
         if role != self.me.role:
             self.me.role = role
             self.role_changed.emit()
+
+    def reset_session(self):
+        """Forget everything about the room we were in (the join screen comes next).
+
+        Order matters: first the registered resetters (board, chat panel,
+        versions list, ...) while app.me still says who we were, then my
+        identity and the user list, which also empties the users panel, the
+        status bar and the remote cursors through users_changed / role_changed.
+        The NetClient is left alone: the caller already closed it.
+        """
+        registry.run_session_resetters(self)
+        self.me.reset()
+        self.users = []
+        self.users_changed.emit()
+        self.role_changed.emit()
 
     def toast(self, text):
         """Show a short notification as a toast (stdout while there is no window yet).
