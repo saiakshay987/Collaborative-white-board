@@ -8,7 +8,8 @@ the window, so the dock is created after every module has been imported.
 Text format bar
 ---------------
 FormatBar (below the pen controls) appears while the text or sticky tool is
-active, or while the select tool has a text/sticky selected. Font, size
+active, or while the select tool has a text/sticky selected (with a
+multi-selection, a change applies to every selected text and sticky). Font, size
 (8-96 board units), text color, bold / italic / underline and left / center /
 right (a sticky also gets a background palette of 8 colors plus "More...").
 With an object selected, each change is sent as OP_UPDATE {obj_id, set:{...}}
@@ -323,14 +324,15 @@ class FormatBar(QGroupBox):
     def _targets(self):
         """Return the selected text/sticky objects (live dicts from BoardModel); [] if none.
 
-        Only the select tool has a selection (one object at a time); the list
-        shape lets a multi-select tool plug in without changing the senders.
+        Only the select tool has a selection, and it may hold many objects of
+        any kind: the format applies to every text and sticky among them and
+        the other kinds (strokes, shapes, images) are ignored.
         """
         tool = getattr(self.app, "active_tool", None)
         if getattr(tool, "id", None) != "select":
             return []
-        obj = tool.selected(self.app)
-        return [obj] if obj is not None and obj.get("kind") in ("text", "sticky") else []
+        return [obj for obj in tool.selected_objects(self.app)
+                if obj.get("kind") in ("text", "sticky")]
 
     def _kind(self, targets):
         """Return 'text' or 'sticky' (what the bar is about), or None to hide the bar."""

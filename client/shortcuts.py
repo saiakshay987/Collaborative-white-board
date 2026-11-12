@@ -791,7 +791,11 @@ _BUILTIN_HELP = (
         ("Ctrl+Z", "undo my last change (done by the server)"),
         ("Ctrl+Y", "redo"),
         ("Escape", "cancel the current drawing / drag; clear the selection"),
-        ("Delete", "delete the selected object (select tool)"),
+        ("Delete / Backspace", "delete the selected objects (select tool)"),
+        ("Ctrl+A", "select every object (select tool)"),
+        ("Shift+click", "add / remove one object in the selection"),
+        ("Drag on empty board", "select everything inside the rectangle (Shift: add to the selection)"),
+        ("Arrow keys", "nudge the selection one grid step (Shift: 5 steps), sent on key release"),
         ("Shift while dragging", "line/arrow at 0/45/90 degrees; square/circle"),
         ("Double-click", "edit a text or sticky note (select tool)"),
     )),
@@ -836,7 +840,7 @@ def _help_html():
 
     # Everything other modules registered (e.g. P3's Ctrl+S / Ctrl+E).
     others = [(e["keyseq"], _first_line(e["fn"])) for e in registry.SHORTCUTS
-              if e["fn"] not in _OWN_FNS and e["keyseq"] != "Delete"]
+              if e["fn"] not in _OWN_FNS and e["keyseq"] not in ("Delete", "Backspace", "Ctrl+A")]
     others += [(e["shortcut"], "%s > %s" % (e["menu"], e["label"])) for e in registry.MENU_ACTIONS
                if e["shortcut"] and e["fn"] not in _OWN_FNS]
     if others:

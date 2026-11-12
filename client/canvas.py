@@ -204,6 +204,10 @@ class CanvasWidget(QWidget):
     Tool control (used by shortcuts.py):
         is_drawing()            True while a tool got a press and awaits the release
         cancel_tool()           Escape: abort the active tool's current drawing
+
+    Optional tool hooks (a tool defines the ones it needs, like cancel()):
+        on_key_press(canvas, ev) / on_key_release(canvas, ev) -> True if used
+        focus_lost(canvas)      the canvas lost the keyboard focus
     """
 
     cursor_moved = pyqtSignal(float, float)
@@ -656,17 +660,44 @@ class CanvasWidget(QWidget):
         super().enterEvent(ev)
 
     # --------------------------------------------------------- keyboard input
+    def _call_key_hook(self, method, ev=None):
+        """Offer a key event (or, with ev None, the focus loss) to the active tool.
+
+        A tool opts in by defining on_key_press(canvas, ev), on_key_release(canvas, ev)
+        and/or focus_lost(canvas); each returns True when it used the event
+        (the select tool uses the arrow keys this way). Like _call_tool, an
+        exception in a tool is printed and swallowed, and a repaint follows
+        because the tool may have changed what it shows.
+        """
+        tool = getattr(self.app, "active_tool", None)
+        fn = getattr(tool, method, None) if tool is not None else None
+        if fn is None:
+            return False
+        try:
+            used = bool(fn(self) if ev is None else fn(self, ev))
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            used = False
+        self.update()
+        return used
+
     def keyPressEvent(self, ev):
-        """Holding Space turns left-drag into panning."""
+        """Holding Space turns left-drag into panning; other keys are offered to the tool first."""
         if ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
             self._space_down = True
             self._update_cursor()
             ev.accept()
             return
+        if self._call_key_hook("on_key_press", ev):
+            ev.accept()
+            return
         super().keyPressEvent(ev)
 
     def keyReleaseEvent(self, ev):
-        """Releasing Space ends Space-panning mode."""
+        """Releasing Space ends Space-panning mode; other releases are offered to the tool first."""
+        if self._call_key_hook("on_key_release", ev):
+            ev.accept()
+            return
         if ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
             self._space_down = False
             if self._pan_button == Qt.LeftButton:
@@ -678,6 +709,11 @@ class CanvasWidget(QWidget):
         super().keyReleaseEvent(ev)
 
     def focusOutEvent(self, ev):
-        """Forget a held Space when focus leaves, so panning mode never sticks."""
+        """Forget a held Space when focus leaves, so panning mode never sticks.
+
+        The tool is told too (focus_lost): a key it is waiting to see released,
+        such as an arrow key of a nudge, would otherwise never complete.
+        """
         self._space_down = False
+        self._call_key_hook("focus_lost")
         super().focusOutEvent(ev)
