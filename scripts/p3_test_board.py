@@ -564,7 +564,7 @@ TEST_KINDS = {
 
 # The contract C4 table (the real permissions.py is P4's).
 ALLOWED = {'host': {'draw', 'undo', 'upload', 'version_save', 'chat', 'cursor',
-                    'clear', 'version_restore', 'set_role', 'kick'},
+                    'clear', 'version_restore', 'version_delete', 'version_rename', 'set_role', 'kick'},
            'editor': {'draw', 'undo', 'upload', 'version_save', 'chat', 'cursor'},
            'viewer': {'chat', 'cursor'}}
 

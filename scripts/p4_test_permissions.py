@@ -25,7 +25,7 @@ from server import chat, permissions, presence  # noqa: E402
 # Expected table, written out independently of permissions._TABLE.
 EXPECTED = {
     "host": {"draw", "undo", "upload", "version_save", "chat", "cursor",
-             "clear", "version_restore", "set_role", "kick"},
+             "clear", "version_restore", "version_delete", "version_rename", "set_role", "kick"},
     "editor": {"draw", "undo", "upload", "version_save", "chat", "cursor"},
     "viewer": {"chat", "cursor"},
 }
@@ -42,7 +42,7 @@ class PermissionTableTest(unittest.TestCase):
                     self.assertEqual(permissions.can(role, action), action in allowed)
 
     def test_actions_set_is_the_contract_one(self):
-        """ACTIONS holds the ten contract actions."""
+        """ACTIONS holds the twelve contract actions."""
         self.assertEqual(set(permissions.ACTIONS), EXPECTED["host"])
 
     def test_unknown_role_or_action_is_denied(self):

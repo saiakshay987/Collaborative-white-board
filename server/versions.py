@@ -11,6 +11,12 @@ Three jobs live in this file.
        VERSION_RESTORE {id}    host only: see below ('before restore <name>')
        auto_versions_tick()    every AUTO_VERSION_INTERVAL_S (5 min), only if the board changed
 
+   The host can also manage the list: VERSION_DELETE {id} removes a version from
+   memory and its file from disk, VERSION_RENAME {id, name} changes its name
+   (1 to 60 characters after trimming). Both are host only (permissions
+   version_delete, version_rename), answer an unknown id with ERROR NOT_FOUND,
+   mark the room as changed (so autosave.json is rewritten) and push VERSIONS.
+
    VERSION_LIST (anybody) answers the sender; every change is pushed to the whole
    room as VERSIONS {versions:[{id, name, by, ts, seq, count}]}. Each version
    is a deep copy of the objects, kept in memory (at most MAX_VERSIONS per room)
@@ -164,6 +170,42 @@ class VersionStore:
             victim = next((e for e in self.entries if e['auto']), self.entries[0])
             self.entries.remove(victim)
             self.dropped.append(victim['meta']['id'])
+
+    def delete(self, version_id):
+        """Remove one version from memory; its file is deleted by the next autosave. Returns True if it existed.
+
+        The id goes on `dropped`, the same list the MAX_VERSIONS trimming uses,
+        so the file removal (and its retry after a disk error) is already
+        handled by _write_version_files. rev changes, so autosave.json is rewritten too.
+        """
+        for e in self.entries:
+            if e['meta']['id'] == version_id:
+                self.entries.remove(e)
+                self.dropped.append(version_id)
+                seqs = [x['meta']['seq'] for x in self.entries if isinstance(x['meta'].get('seq'), int)]
+                self.last_seq = max(seqs) if seqs else None
+                self.rev += 1
+                return True
+        return False
+
+    def rename(self, version_id, name):
+        """Give one version a new name. Returns the new metadata dict, or None for an unknown id.
+
+        The metadata dict is REPLACED, not edited in place: the autosave thread
+        may be writing the old one to disk right now, and it only marks the file
+        as written if the metadata is still the one it wrote (see
+        _write_version_files), so the new name is always written afterwards. A
+        renamed version stops being a periodic one: somebody chose its name, so
+        it must not be the first to be dropped when MAX_VERSIONS is reached.
+        """
+        for e in self.entries:
+            if e['meta']['id'] == version_id:
+                e['meta'] = dict(e['meta'], name=name)
+                e['auto'] = False
+                e['on_disk'] = e['objects'] is None     # entries without contents have no file to rewrite
+                self.rev += 1
+                return dict(e['meta'])
+        return None
 
     def meta_list(self):
         """Metadata of every version, oldest first (the payload of VERSIONS)."""
@@ -431,8 +473,10 @@ def _write_version_files(room, folder):
     """
     pending, dropped = room.versions.pending_files()
     for entry in pending:
-        write_atomic(os.path.join(folder, '%d.json' % entry['meta']['id']), version_document(entry))
-        entry['on_disk'] = True
+        meta = entry['meta']                # a rename replaces this dict while we write
+        write_atomic(os.path.join(folder, '%d.json' % meta['id']), version_document(dict(entry, meta=meta)))
+        if entry['meta'] is meta:           # not renamed meanwhile; otherwise it stays pending for the next round
+            entry['on_disk'] = True
     for vid in dropped:
         try:
             os.remove(os.path.join(folder, '%d.json' % vid))
@@ -695,6 +739,30 @@ def _clean_name(value):
     return name[:MAX_NAME_LEN]
 
 
+def _version_id(msg):
+    """The `id` of a VERSION_DELETE / VERSION_RENAME / VERSION_RESTORE payload; BoardError(BAD_FORMAT) unless it is an integer."""
+    vid = msg['payload'].get('id')
+    if not isinstance(vid, int) or isinstance(vid, bool):
+        raise BoardError(protocol.BAD_FORMAT, 'id must be an integer')
+    return vid
+
+
+def _rename_text(value):
+    """The new name of a VERSION_RENAME: a string, trimmed, 1 to MAX_NAME_LEN printable characters.
+
+    Unlike VERSION_SAVE (which cuts a long name) a rename is refused when it is
+    too long, as the contract says 1-60: BoardError(BAD_FORMAT).
+    """
+    if not isinstance(value, str):
+        raise BoardError(protocol.BAD_FORMAT, 'name must be a string')
+    name = value.strip()
+    if not name or not name.isprintable():
+        raise BoardError(protocol.BAD_FORMAT, 'name must not be empty')
+    if len(name) > MAX_NAME_LEN:
+        raise BoardError(protocol.BAD_FORMAT, 'name is longer than %d characters' % MAX_NAME_LEN)
+    return name
+
+
 @handler(protocol.VERSION_SAVE)
 def on_version_save(session, msg):
     """VERSION_SAVE {name}: store a copy of the board (host or editor) and push VERSIONS to the room."""
@@ -746,6 +814,51 @@ def on_version_restore(session, msg):
             print('[versions] room %s: %s restored version %d (%s)' % (room.code, user, vid, meta['name']))
     except BoardError as exc:
         session.send_error(exc.code, exc.text, protocol.VERSION_RESTORE)
+
+
+@handler(protocol.VERSION_DELETE)
+def on_version_delete(session, msg):
+    """VERSION_DELETE {id}: host only. Remove the version (memory now, file at the next autosave), push VERSIONS.
+
+    The permission is checked first, from the role the SERVER stored for this
+    connection, so an editor who sends the raw message gets FORBIDDEN and
+    nothing changes. The change and the broadcast happen under room.lock, so
+    every client sees the lists in the order the changes happened.
+    """
+    room = session.room
+    try:
+        _require(session, 'version_delete')
+        vid = _version_id(msg)
+        with room.lock:
+            meta = room.versions.get_meta(vid)
+            if meta is None:
+                raise BoardError(protocol.NOT_FOUND, 'no version %d' % vid)
+            room.versions.delete(vid)
+            push_versions(room)
+            _wake.set()
+            print('[versions] room %s: %s deleted version %d (%s)' % (room.code, msg['user'], vid, meta['name']))
+    except BoardError as exc:
+        session.send_error(exc.code, exc.text, protocol.VERSION_DELETE)
+
+
+@handler(protocol.VERSION_RENAME)
+def on_version_rename(session, msg):
+    """VERSION_RENAME {id, name}: host only. Change the version's name (trimmed, 1-60 characters), push VERSIONS."""
+    room = session.room
+    try:
+        _require(session, 'version_rename')
+        vid = _version_id(msg)
+        name = _rename_text(msg['payload'].get('name'))
+        with room.lock:
+            old = room.versions.get_meta(vid)
+            if old is None:
+                raise BoardError(protocol.NOT_FOUND, 'no version %d' % vid)
+            room.versions.rename(vid, name)
+            push_versions(room)
+            _wake.set()
+            print('[versions] room %s: %s renamed version %d (%s -> %s)' % (room.code, msg['user'], vid, old['name'], name))
+    except BoardError as exc:
+        session.send_error(exc.code, exc.text, protocol.VERSION_RENAME)
 
 
 # ---------------------------------------------------------------- room hooks and start-up

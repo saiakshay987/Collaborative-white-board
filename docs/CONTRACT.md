@@ -1,6 +1,8 @@
 # CONTRACT.md
 
-Revision 5. Frozen: additions only, applied by P1.
+Revision 6. Frozen: additions only, applied by P1.
+
+Revision 6: version history can be managed. Two new message types, VERSION_DELETE and VERSION_RENAME (C3), both host only, and two new permission actions, version_delete and version_rename (C4).
 
 Revision 5: the room list. Two new message types, ROOM_LIST_REQUEST and ROOM_LIST (C1), the only request a connection may send before it has joined besides CREATE_ROOM, JOIN_ROOM and PONG; `autosave.json` now holds the whole room (E7), so a restarted server lists and re-opens every room with its password, host, colors and roles (E8).
 
@@ -78,6 +80,8 @@ Echo rule: every accepted operation is broadcast to ALL clients of the room, INC
 | VERSION_LIST | C to S | {} | |
 | VERSIONS | S to C | {versions:[{id, name, by, ts, seq, count}]} | Pushed to all on any change and on VERSION_LIST |
 | VERSION_RESTORE | C to S | {id} | Host only; followed by SNAPSHOT to all |
+| VERSION_DELETE | C to S | {id} | Host only. Removes the version from memory and its file from disk. Unknown id: ERROR NOT_FOUND. Then VERSIONS to all |
+| VERSION_RENAME | C to S | {id, name} | Host only. name is trimmed and must be 1 to 60 characters (else ERROR BAD_FORMAT). Unknown id: ERROR NOT_FOUND. Then VERSIONS to all |
 | IMG_BEGIN | both | {asset_id, name, mime, size, chunks, w, h} | Upload (C to S) or download (S to C) |
 | IMG_CHUNK | both | {asset_id, idx, data} | data is base64 of at most 24 KB of raw bytes |
 | IMG_END | both | {asset_id, sha256} | Receiver verifies size and hash |
@@ -103,7 +107,7 @@ Roles and permissions (`permissions.can(role, action)`; the creator is host, joi
 |---|---|
 | draw (OP_ADD, OP_STROKE_PART, OP_UPDATE, OP_DELETE), undo (UNDO, REDO), upload (IMG_*), version_save | host, editor |
 | chat (CHAT, DM), cursor | host, editor, viewer |
-| clear, version_restore, set_role, kick | host |
+| clear, version_restore, version_delete (VERSION_DELETE), version_rename (VERSION_RENAME), set_role, kick | host |
 
 ## D. Board objects
 
@@ -147,7 +151,7 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 - `server/dispatcher.py` (P1): decorator `@handler('TYPE')` on `fn(session, msg)`. Before join a connection may send only CREATE_ROOM, JOIN_ROOM, PONG and ROOM_LIST_REQUEST; anything else gets ERROR NO_ROOM. `session.member` has name, role, color, token; `session.room`; `session.send(type, payload, **env)`; `session.send_error(code, text, ref_type)`.
 - `server/rooms.py` (P1): Room has `.code`, `.members` (name to Member), `.lock` (RLock), `.board` (attached by P3), `.chat` (attached by P4), `.assets` (P3), `.broadcast(type, payload, exclude=None, **env)` and `.send_to(name, type, payload, **env)`. env may carry op_id, seq, user. Hooks run in registration order: `rooms.on_room_created(fn(room))`, `rooms.on_member_joined(fn(room, member, rejoin, last_seq))`, `rooms.on_member_left(fn(room, member))`. `Room.summary()` is one row of ROOM_LIST and `rooms.manager.summaries()` all of them.
 - `server/presence.py` (P1): `broadcast_user_list(room)`. Call it after changing any member's role.
-- `server/permissions.py` (P4): `can(role, action) -> bool`. Actions: draw, undo, upload, version_save, chat, cursor, clear, version_restore, set_role, kick.
+- `server/permissions.py` (P4): `can(role, action) -> bool`. Actions: draw, undo, upload, version_save, chat, cursor, clear, version_restore, version_delete, version_rename, set_role, kick.
 - `server/board_state.py` (P3): BoardState with `.objects` (ordered dict), `.seq`, `.log`, `.apply(envelope)`, `.snapshot_payload()`, `.delta(from_seq)`.
 
 ### Client

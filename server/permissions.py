@@ -9,7 +9,7 @@ BEFORE it changes any room state; the client is never trusted to enforce roles
 # The actions of contract section F (server).
 ACTIONS = frozenset([
     "draw", "undo", "upload", "version_save", "chat", "cursor",
-    "clear", "version_restore", "set_role", "kick",
+    "clear", "version_restore", "version_delete", "version_rename", "set_role", "kick",
 ])
 
 # Actions every non-viewer may do: everything that changes the board.
@@ -17,7 +17,7 @@ _EDITOR_ACTIONS = frozenset(["draw", "undo", "upload", "version_save", "chat", "
 
 # role -> set of allowed actions (contract C4).
 #   host   : everything, including the destructive/administrative actions
-#            (clear, version_restore, set_role, kick)
+#            (clear, version_restore, version_delete, version_rename, set_role, kick)
 #   editor : draw, undo, upload, version_save, chat, cursor
 #   viewer : read-only, may only chat and move a cursor
 _TABLE = {

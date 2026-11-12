@@ -235,14 +235,99 @@ class PanelTests(unittest.TestCase):
     def test_buttons_follow_the_role(self):
         hp.model.apply({"versions": [version(1)]})
         self.panel.table.selectRow(0)
-        expected = {"host": (True, True, True, True), "editor": (True, False, True, True),
-                    "viewer": (False, False, False, False), None: (False, False, False, False)}
+        expected = {"host": (True, True, True, True, True, True), "editor": (True, False, False, False, True, True),
+                    "viewer": (False, False, False, False, False, False),
+                    None: (False, False, False, False, False, False)}
         for role, want in expected.items():
             self.app.set_role(role) if role else setattr(self.app.me, "role", None)
             self.panel.refresh_buttons()
             p = self.panel
-            self.assertEqual((p.save_btn.isEnabled(), p.restore_btn.isEnabled(), p.undo_btn.isEnabled(),
-                              p.redo_btn.isEnabled()), want, role)
+            self.assertEqual((p.save_btn.isEnabled(), p.restore_btn.isEnabled(), p.rename_btn.isEnabled(),
+                              p.delete_btn.isEnabled(), p.undo_btn.isEnabled(), p.redo_btn.isEnabled()), want, role)
+
+    def test_disabled_version_buttons_say_why(self):
+        hp.model.apply({"versions": [version(1)]})
+        self.panel.table.selectRow(0)
+        self.app.set_role("editor")
+        for button, verb in ((self.panel.restore_btn, "restore"), (self.panel.rename_btn, "rename"),
+                             (self.panel.delete_btn, "delete")):
+            self.assertEqual(button.toolTip(), "Only the host can %s a version" % verb)
+        self.app.set_role("host")
+        self.assertNotIn("Only the host", self.panel.delete_btn.toolTip())
+
+    def test_rename_button_prefills_and_sends_the_trimmed_name(self):
+        hp.model.apply({"versions": [version(5, "old name")]})
+        self.panel.table.selectRow(0)
+        with mock.patch.object(QInputDialog, "getText", return_value=("  New name ", True)) as ask:
+            self.panel.rename_btn.click()
+        self.assertEqual(ask.call_args[1]["text"], "old name")
+        self.assertEqual(self.app.net.sent, [(protocol.VERSION_RENAME, {"id": 5, "name": "New name"}, None)])
+
+    def test_rename_sends_nothing_for_cancel_blank_same_or_too_long(self):
+        hp.model.apply({"versions": [version(5, "old name")]})
+        self.panel.table.selectRow(0)
+        toasts = []
+        self.app.toast = toasts.append
+        for answer in (("x", False), ("   ", True), ("old name", True), ("x" * 61, True)):
+            with mock.patch.object(QInputDialog, "getText", return_value=answer):
+                self.panel.rename_btn.click()
+        self.assertEqual(self.app.net.sent, [])
+        self.assertEqual(len(toasts), 1)                         # only the too-long name explains itself
+
+    def test_delete_button_confirms_first(self):
+        hp.model.apply({"versions": [version(7, "good one")]})
+        self.panel.table.selectRow(0)
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.No):
+            self.panel.delete_btn.click()
+        self.assertEqual(self.app.net.sent, [])
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes) as ask:
+            self.panel.delete_btn.click()
+        self.assertEqual(self.app.net.sent, [(protocol.VERSION_DELETE, {"id": 7}, None)])
+        self.assertIn("good one", ask.call_args[0][2])
+
+    def test_non_host_helpers_send_nothing(self):
+        for role in ("editor", "viewer"):
+            app, toasts = make_app(role), []
+            app.toast = toasts.append
+            self.assertFalse(hp.rename_version(app, version(4), "new"))
+            self.assertFalse(hp.delete_version(app, version(4)))
+            self.assertEqual((app.net.sent, toasts), ([], ["Only the host can rename a version",
+                                                           "Only the host can delete a version"]))
+
+    def test_right_click_menu_selects_the_row_and_is_disabled_for_non_hosts(self):
+        hp.model.apply({"versions": [version(1, "a"), version(2, "b")]})
+        row_pos = self.panel.table.visualItemRect(self.panel.table.item(1, 0)).center()    # row 1 is version 1
+        for role, enabled in (("host", True), ("editor", False)):
+            self.app.set_role(role)
+            with mock.patch.object(hp.QMenu, "exec_"):
+                self.panel.on_context_menu(row_pos)
+            self.assertEqual(self.panel.selected_version()["id"], 1)
+            actions = self.panel.context_menu.actions()
+            self.assertEqual([a.text() for a in actions], ["Restore", "Rename", "Delete"])
+            self.assertEqual([a.isEnabled() for a in actions], [enabled] * 3)
+            if not enabled:
+                self.assertEqual(actions[2].toolTip(), "Only the host can delete a version")
+
+    def test_right_click_menu_actions_send_the_messages(self):
+        hp.model.apply({"versions": [version(3, "c")]})
+        row_pos = self.panel.table.visualItemRect(self.panel.table.item(0, 0)).center()
+        with mock.patch.object(hp.QMenu, "exec_"):
+            self.panel.on_context_menu(row_pos)
+        rename, delete = self.panel.context_menu.actions()[1:]
+        with mock.patch.object(QInputDialog, "getText", return_value=("d", True)):
+            rename.trigger()
+        with mock.patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            delete.trigger()
+        self.assertEqual(self.app.net.sent, [(protocol.VERSION_RENAME, {"id": 3, "name": "d"}, None),
+                                             (protocol.VERSION_DELETE, {"id": 3}, None)])
+
+    def test_selection_survives_a_rename_push(self):
+        """The server answers a rename with a new VERSIONS list: the same version stays selected, with its new name."""
+        hp.model.apply({"versions": [version(1, "a"), version(2, "b")]})
+        self.panel.table.selectRow(1)                            # version 1
+        hp.model.apply({"versions": [version(1, "renamed"), version(2, "b")]})
+        self.assertEqual(self.panel.selected_version()["name"], "renamed")
+        self.assertTrue(self.panel.rename_btn.isEnabled())
 
     def test_role_change_signal_updates_the_buttons(self):
         hp.model.apply({"versions": [version(1)]})

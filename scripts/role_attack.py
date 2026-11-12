@@ -13,7 +13,7 @@ Demo (start the server and a normal host client first):
   1. The script joins the room. A new member is an editor.
   2. It waits for Enter. On the host's screen: Session > Manage roles, set
      "mallory" to viewer. Then press Enter here.
-  3. It checks that the server really lists it as a viewer and sends nine
+  3. It checks that the server really lists it as a viewer and sends eleven
      actions a viewer must not do. Every ERROR FORBIDDEN is a green PASS;
      anything else (accepted, another error code, no answer) is a red FAIL.
   4. Control: a viewer MAY chat, so a CHAT must still be accepted. This shows
@@ -208,6 +208,8 @@ def attack_list(me):
         (protocol.OP_CLEAR, {}, "clear the whole board"),
         (protocol.UNDO, {}, "undo"),
         (protocol.VERSION_RESTORE, {"id": "v1"}, "restore an old version"),
+        (protocol.VERSION_DELETE, {"id": 1}, "delete a version"),
+        (protocol.VERSION_RENAME, {"id": 1, "name": "hacked"}, "rename a version"),
         (protocol.SET_ROLE, {"user": me, "role": "host"}, "promote myself to host"),
         (protocol.KICK, {"user": "nobody"}, "kick a user"),
         (protocol.IMG_BEGIN, {"asset_id": "role-attack-img", "name": "evil.png",
