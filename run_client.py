@@ -5,10 +5,12 @@ Imports client.bootstrap (every module registers itself), creates the
 shared AppState, the NetClient and the BoardModel, shows the connect dialog
 (host or join a room) and then the main window.
 
-When the host kicks us, NetClient does not reconnect (net.kicked); the
-connect dialog opens again over the window with "You were removed from the
-room". Joining from it continues in the same window (JOIN_OK, SNAPSHOT and
-CHAT_HISTORY refresh everything, as after a reconnect); Cancel quits.
+When a session ends (Session > Disconnect, a kick, auto-reconnect giving up
+after 60 s, a server shutdown) SessionFlow resets the client and opens the
+connect dialog again over the window, pre-filled with the last server, room
+code and username and showing the reason. Joining from it continues in the
+same window: the server kept the room, and JOIN_OK, USER_LIST, SNAPSHOT,
+CHAT_HISTORY and VERSIONS fill the emptied client. Cancel quits.
 """
 
 import sys
@@ -20,6 +22,7 @@ import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
 from client.board_model import BoardModel
 from client import cursor_overlay, toasts
+from common import config
 from client.connect_dialog import ConnectDialog
 from client.main_window import MainWindow
 from client.net_client import NetClient
@@ -61,30 +64,84 @@ def wire_status(app, window):
     window.statusBar().addPermanentWidget(ConnectionStatus(app.net, window))
     app.net.reconnecting.connect(lambda: app.toast("Connection lost, reconnecting..."))
     app.net.reconnected.connect(lambda: app.toast("Reconnected, catching up..."))
-    app.net.disconnected.connect(lambda reason: on_disconnected(app, window, reason))
     window.setWindowTitle("LAN Whiteboard - room %s - %s" % (app.me.room, app.me.username))
 
 
-def on_disconnected(app, window, reason):
-    """NetClient gave up or we were kicked: toast it; after a kick, back to the dialog.
+class SessionFlow:
+    """Takes the user back to the join screen whenever the session ends.
 
-    The dialog is opened with QTimer.singleShot(0): this slot runs inside
-    NetClient's signal emission (inside a USER_LEFT handler for a kick),
-    and a modal dialog started there would hold up the other handlers of
-    that message until it closes.
+    NetClient emits `disconnected(reason)` exactly when the session is over
+    for good, whatever the cause:
+      * Session > Disconnect (the user chose to leave: LEAVE was sent),
+      * the host kicked us,
+      * the connection dropped and auto-reconnect gave up after 60 s (this
+        is also what a server that was shut down looks like to a client),
+      * the server could not be reached.
+    In every case the TCP link and the reconnect loop are already stopped by
+    NetClient when the signal arrives, so what is left is on the client side:
+    reset every module (AppState.reset_session), then show the connect dialog
+    again, pre-filled with the last server, room code and username. When the
+    dialog joins again, JOIN_OK, USER_LIST, SNAPSHOT, CHAT_HISTORY and
+    VERSIONS fill the emptied client from the server, which kept the room.
     """
-    if not app.net.kicked:
-        app.toast("Disconnected: " + reason)
-        return
-    app.toast(reason)
-    QTimer.singleShot(0, lambda: back_to_connect_dialog(app, window, reason))
 
+    def __init__(self, app, window):
+        """Remember app and window; nothing is shown until a session ends."""
+        self.app = app
+        self.window = window
+        # True while we are resetting or the join screen is open. The dialog
+        # itself reports failed connects through `disconnected`; those must
+        # not start another round of this flow.
+        self.busy = False
+        # True once the application is closing (no join screen then).
+        self.quitting = False
+        # Last known join details, used to pre-fill the join screen.
+        self.last = {"server": "", "room": "", "username": ""}
 
-def back_to_connect_dialog(app, window, reason):
-    """After a kick: show the connect dialog over the window; Cancel closes the app."""
-    dialog = ConnectDialog(app, window, notice=reason)
-    if dialog.exec_() != ConnectDialog.Accepted:
-        window.close()
+    def remember_session(self):
+        """Store server, room code and username of the session that is ending.
+
+        Fields that are unknown (nothing joined yet) keep their old value.
+        """
+        net, me = self.app.net, self.app.me
+        if net.host:
+            self.last["server"] = net.host if net.port == config.PORT else "%s:%d" % (net.host, net.port)
+        if me.room:
+            self.last["room"] = me.room
+        if me.username:
+            self.last["username"] = me.username
+
+    def on_disconnected(self, reason):
+        """NetClient slot: the session ended; schedule the join screen.
+
+        The dialog is opened with QTimer.singleShot(0): this slot runs inside
+        NetClient's signal emission (inside a USER_LEFT handler for a kick),
+        and a modal dialog started there would hold up the other handlers of
+        that message until it closes.
+        """
+        if self.busy or self.quitting:
+            return
+        self.busy = True
+        self.remember_session()
+        QTimer.singleShot(0, lambda: self.show_join_screen(reason))
+
+    def show_join_screen(self, reason):
+        """Reset the client, then run the connect dialog (Cancel quits the app)."""
+        # Reset first: while the dialog is open the board, chat, users and
+        # history must already be empty, and the next join must not see
+        # anything of the old session.
+        self.app.reset_session()
+        self.window.statusBar().clearMessage()
+        dialog = ConnectDialog(self.app, self.window, notice=reason, prefill=self.last)
+        accepted = dialog.exec_() == ConnectDialog.Accepted
+        if accepted:
+            self.busy = False        # joined again: the next end of session starts this flow anew
+            return
+        # Cancel: nothing left to show, so quit. Closing the TCP link first
+        # (if the dialog opened one) lets the window close without asking.
+        self.quitting = True
+        self.app.net.disconnect()
+        self.window.close()
 
 
 def main():
@@ -106,6 +163,9 @@ def main():
     window = MainWindow(app)
     app.window = window
     wire_status(app, window)
+    flow = SessionFlow(app, window)
+    app.net.disconnected.connect(flow.on_disconnected)
+    qapp.aboutToQuit.connect(lambda: setattr(flow, "quitting", True))
     cursor_overlay.install(app)  # live cursors need app.canvas, built by MainWindow
     toasts.preload_sounds()      # generate the join/leave sounds before the first join
     window.show()

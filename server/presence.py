@@ -13,11 +13,16 @@ or other join can slip in between):
                              <---    USER_LIST (to all)   (this module)
                              <---    SNAPSHOT / SYNC_DELTA  (P3, sync.py)
                              <---    CHAT_HISTORY           (P4, chat.py)
+                             <---    VERSIONS               (P3, registered last by bootstrap.py)
     other clients            <---  USER_JOINED {name, color}, USER_LIST
 
 Leaving: a LEAVE message removes the seat (reason "leave"). A dropped TCP
 connection only marks the seat offline (reason "timeout") so the user can
-resume it with the token within config.REJOIN_WINDOW_S.
+resume it with the token within config.REJOIN_WINDOW_S. The ROOM outlives its
+members: when the last one leaves, board, chat, versions and assets stay for
+as long as the server runs, and room.profiles remembers each username's color
+and role, so whoever comes back with the same name is the same person again
+(the host gets host back). See rooms.RoomManager.join.
 
 Heartbeat and liveness (contract C1, E4, E5) live here too, see below,
 and so does the STATS broadcast (latency and traffic, every 2 s) and the
@@ -486,8 +491,7 @@ class Heartbeat(threading.Thread):
       2. every config.HEARTBEAT_S sends PING {t} to every connection,
       3. every STATS_EVERY_S sends STATS (RTT per user + traffic
          counters) to every room,
-      4. lets rooms.manager drop expired offline seats and delete rooms
-         that have been empty for rooms.ROOM_EMPTY_TTL_S.
+      4. lets rooms.manager drop expired offline seats (rooms are kept).
     Timeouts are checked BEFORE pinging, so a PING to a dead socket can
     never delay the detection of other dead clients.
     """

@@ -1,6 +1,8 @@
 # CONTRACT.md
 
-Revision 3. Frozen: additions only, applied by P1.
+Revision 4. Frozen: additions only, applied by P1.
+
+Revision 4 (no new message types or fields): rooms are kept while the server runs (E8), the join order ends with VERSIONS (C1), `app.reset_session()` and `@on_session_reset` (F, G).
 
 Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 applies it within 30 minutes and replies `CONTRACT rev N`. Until then, keep using the old shape.
 
@@ -37,7 +39,7 @@ Contract changes: post in the group chat as `CONTRACT CHANGE: <what, why>`. P1 a
 |---|---|---|---|
 | CREATE_ROOM | C to S | {username, password?} | Sender becomes host. Reply: JOIN_OK |
 | JOIN_ROOM | C to S | {room, username, password?, token?, last_seq?} | token and last_seq only on reconnect |
-| JOIN_OK | S to C | {room, token, role, color, users} | Then the server runs the join hooks: SNAPSHOT or SYNC_DELTA (P3), CHAT_HISTORY (P4) |
+| JOIN_OK | S to C | {room, token, role, color, users} | Then the server runs the join hooks: USER_LIST, SNAPSHOT or SYNC_DELTA (P3), CHAT_HISTORY (P4), VERSIONS (P3). The order is fixed |
 | LEAVE | C to S | {} | Clean exit |
 | USER_LIST | S to C | {users:[{name, color, role, online}]} | Sent to everyone on every change, role changes included |
 | USER_JOINED, USER_LEFT | S to C | {name, color, reason?} | reason: leave, timeout or kicked |
@@ -131,6 +133,8 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 5. Disconnect detection. No frame from a client for 15 s (`config.TIMEOUT_S`) marks it offline and sends USER_LEFT with reason timeout.
 6. Undo and redo. UNDO reverts only the sender's own most recent undoable action (add or stroke, update, delete). OP_CLEAR is not undoable, but the server takes an automatic version first. A new action clears the sender's redo stack. If the target object no longer exists the server moves to the previous entry; with nothing left it replies ERROR NOT_FOUND.
 7. Autosave. Every 10 s the server writes `server_data/<room>/autosave.json`; a restarted server restores rooms from it.
+8. Rooms outlive their members. A room is never deleted while the server runs; when the last member leaves it keeps board, chat, versions and assets. The server remembers each username's color and role (`room.profiles`) and the room's host username (`room.host_name`): a user who joins again with the same name gets the same color and role, and the original host gets host back when nobody else holds it. A name whose seat is still offline (connection lost, token lost) takes that seat back; a name that is online is NAME_TAKEN.
+9. Leaving the session. Session > Disconnect (LEAVE), a kick, and an auto-reconnect that gave up (60 s, also what a stopped server looks like) all end in `NetClient.disconnected(reason)`. The client then calls `app.reset_session()` and shows the connect dialog, pre-filled with the last server, room code and username, with the reason. The next join starts from `last_seq` 0 and a full SNAPSHOT.
 
 ## F. Python interfaces between owners
 
@@ -144,7 +148,7 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 
 ### Client
 
-- `client/app_state.py` (P1): AppState holds `.net`, `.me` (username, role, color, room, token), `.users`, `.board`, `.canvas`, `.window`, `.pen` (dict: color, width, tool, alpha), `.active_tool` and `.toast(text)`; Qt signals `users_changed`, `dm_requested(str)` and `role_changed`.
+- `client/app_state.py` (P1): AppState holds `.net`, `.me` (username, role, color, room, token), `.users`, `.board`, `.canvas`, `.window`, `.pen` (dict: color, width, tool, alpha), `.active_tool` and `.toast(text)`; Qt signals `users_changed`, `dm_requested(str)` and `role_changed`. `.reset_session()` runs every `@on_session_reset` function, then clears `.me` and `.users`.
 - `client/net_client.py` (P1): NetClient(QObject) with `connect_to(host, port)`, `send(type, payload, op_id=None)`, `disconnect()`; signals `connected`, `disconnected(str)`, `reconnecting`, `reconnected`. Incoming messages reach handlers registered with `on_message`, on the GUI thread.
 - `client/ops.py` (P1, frozen): `send_op(app, type, payload) -> op_id` creates the op_id, calls `app.board.apply_local(...)`, then `app.net.send(...)`. Every board change by every tool (P2, P3, P4) goes through it; nobody sends OP_* with net.send directly.
 - `client/board_model.py` (P3): BoardModel(QObject) with `.objects` (ordered dict), `.last_seq`, `.apply_local(type, payload, op_id)`, `.apply_remote(msg)`, `.load_snapshot(payload)` and signal `changed(obj_id_or_None)`.
@@ -155,9 +159,9 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 
 ## G. Registries and bootstrap (client/registry.py, frozen)
 
-`register_tool(cls)`, `register_renderer(kind, fn)`, `register_editor(kind, fn(app, canvas, obj))` (called by the select tool on double-click), `register_panel(name, factory(app), area, title)`, `register_menu_action(menu, label, fn(app), shortcut=None)`, `register_shortcut(keyseq, fn(app))`, and the decorator `on_message(type)` for `fn(app, msg)`.
+`register_tool(cls)`, `register_renderer(kind, fn)`, `register_editor(kind, fn(app, canvas, obj))` (called by the select tool on double-click), `register_panel(name, factory(app), area, title)`, `register_menu_action(menu, label, fn(app), shortcut=None)`, `register_shortcut(keyseq, fn(app))`, the decorator `on_message(type)` for `fn(app, msg)`, and the decorator `on_session_reset` for `fn(app)`: it empties a module's per-room state (board, chat, versions) when the user leaves the room. BoardModel also has `.reset()`.
 
-`server/bootstrap.py` and `client/bootstrap.py` import every module with plain import statements (PyInstaller needs static imports), in this order.
+`server/bootstrap.py` and `client/bootstrap.py` import every module with plain import statements (PyInstaller needs static imports), in this order. The server's last line registers `versions.send_versions_on_join` as a join hook after chat, so VERSIONS follows CHAT_HISTORY.
 
 - Server: dispatcher, rooms, presence (P1); permissions (P4); board_state, board_ops, undo, sync, versions, assets (P3); chat (P4). Chat stays last so the join order is presence, snapshot, chat history.
 - Client: registry, app_state, net_client, board_model, render, render_draw, render_text, render_image, canvas, toolbar, tools.pen_tool, tools.shape_tools, tools.select_tool, tools.text_tool, tools.image_tool, shortcuts, draw_sync, chat_panel, users_panel, stats_panel, history_panel, cursor_overlay, toasts, export, connect_dialog, main_window.

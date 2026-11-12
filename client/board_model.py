@@ -59,7 +59,7 @@ from collections import OrderedDict, deque
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from common import protocol
-from client.registry import on_message, register_menu_action
+from client.registry import on_message, on_session_reset, register_menu_action
 
 # The operations that change objects. UNDO and REDO are not in this set: the
 # server answers them with ordinary OP_* messages (contract C2).
@@ -165,6 +165,30 @@ class BoardModel(QObject):
         if _env_pct("WB_DROP_PCT") or _env_pct("WB_DUP_PCT"):
             print("[board] DEBUG fault injection on: drop %.0f%%, duplicate %.0f%% of incoming board ops"
                   % (_env_pct("WB_DROP_PCT"), _env_pct("WB_DUP_PCT")))
+
+    # ------------------------------------------------------------ session reset
+    def reset(self):
+        """Forget the whole board and every piece of sync state (the user left the room).
+
+        After this the model is as new: no objects, last_seq 0, no pending
+        operations, no buffered messages, no timers running. The next join
+        sends a SNAPSHOT, which fills the board again. The generation is
+        bumped so that an echo that still arrives from the old connection is
+        never taken for a confirmation of something that was just wiped.
+        One changed(None) makes the canvas repaint the empty board.
+        """
+        self._gap_timer.stop()
+        self._tick_timer.stop()
+        self.objects = OrderedDict()
+        self.last_seq = 0
+        self.pending = OrderedDict()
+        self._buffer = {}
+        self._applied_ids = OrderedDict()
+        self._sync_queue.clear()
+        self._last_sync_at = None
+        self._dup_queue = []
+        self._generation += 1
+        self.changed.emit(None)
 
     # ------------------------------------------------------------ applying ops
     def _apply(self, type, payload, user=None, seq=None):
@@ -519,6 +543,12 @@ def _on_op(app, msg):
 
 for _op_type in OBJECT_OPS:
     on_message(_op_type)(_on_op)
+
+
+@on_session_reset
+def _on_session_reset(app):
+    """The user left the room: empty the board (BoardModel.reset)."""
+    model_of(app).reset()
 
 
 @on_message(protocol.SNAPSHOT)

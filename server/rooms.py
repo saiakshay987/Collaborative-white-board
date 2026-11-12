@@ -51,14 +51,11 @@ REASON_LEAVE = "leave"
 REASON_TIMEOUT = "timeout"
 REASON_KICKED = "kicked"
 
-# A room with no online member for this long (seconds) is deleted from
-# memory by RoomManager.sweep (run by the heartbeat thread). Server-side
-# housekeeping only, not part of the protocol, so it lives here and not in
-# common/config.py. It is much longer than config.REJOIN_WINDOW_S, so every
-# offline seat has expired before its room goes away. Nothing on disk is
-# touched: the autosave file (contract E7, P3) stays and is written every
-# 10 s, so the last state of the room was saved long before it is deleted.
-ROOM_EMPTY_TTL_S = 10 * 60
+# Rooms are never deleted while the server runs: when the last member leaves,
+# the room keeps its board, chat, versions and assets, so everybody can come
+# back later with the room code and find everything as they left it (the old
+# "delete an empty room after 10 minutes" rule is gone). Nothing on disk is
+# touched either: the autosave file (contract E7, P3) is written every 10 s.
 
 
 class JoinError(Exception):
@@ -202,12 +199,17 @@ class Room:
         self.board = None   # attached by P3 (server/board_state.py)
         self.chat = None    # attached by P4 (server/chat.py)
         self.assets = None  # attached by P3 (server/assets.py)
-        # Time the last online member went offline (None while someone is
-        # online); maintained by RoomManager.sweep.
-        self.empty_since = None
-        # Set (under room.lock) when the room is deleted, so a JOIN_ROOM
-        # that looked the room up just before cannot seat itself in it.
+        # Kept for code that checks it (versions.py autosave): rooms are no
+        # longer deleted while the server runs, so this stays False.
         self.closed = False
+        # Who is who, by username, for as long as the room exists. A seat is
+        # deleted on LEAVE / kick / expiry, but the profile stays, so a user
+        # who comes back with the same name gets the same color and role.
+        # name -> {"color": '#rrggbb', "role": 'host'|'editor'|'viewer'}
+        self.profiles = {}
+        # Username of the room's host (the creator, or the first user to join
+        # a room restored from disk). None until somebody has joined.
+        self.host_name = None
         self._color_index = 0
         self._salt = secrets.token_bytes(16)
         self._pw_hash = self._hash(password) if password else None
@@ -242,6 +244,20 @@ class Room:
         """Return a list of members that currently have a connection."""
         with self.lock:
             return [m for m in self.members.values() if m.online and m.session is not None]
+
+    def remember(self, member):
+        """Store member's color and role under its username (call under room.lock).
+
+        Called whenever a seat goes away or offline, so the profile holds the
+        LATEST role (the host may have changed it with SET_ROLE meanwhile).
+        """
+        with self.lock:
+            self.profiles[member.name] = {"color": member.color, "role": member.role}
+
+    def has_host(self):
+        """True if some seat in the room currently has the host role."""
+        with self.lock:
+            return any(m.role == ROLE_HOST for m in self.members.values())
 
     # -- sending -------------------------------------------------------------
 
@@ -358,60 +374,52 @@ class RoomManager:
         with self.lock:
             return self.rooms.get(code)
 
-    def add_member(self, room, name, role, session):
+    def add_member(self, room, name, role, session, color=None):
         """Create a new online Member in room and return it.
 
-        The caller (join) has already checked name and password.
+        The caller (join) has already checked name and password. color is a
+        remembered color for a returning user; None picks the next free one.
         """
         with room.lock:
-            member = Member(name, role, room.next_color(), session)
+            member = Member(name, role, color or room.next_color(), session)
             room.members[name] = member
+            room.remember(member)
             return member
 
     def purge_expired(self, room):
         """Drop offline seats whose rejoin window (config.REJOIN_WINDOW_S) is over.
 
         Their on_member_left hooks already ran when they went offline, so
-        the seat is simply removed; the name becomes free again.
+        the seat is simply removed; the name becomes free again. The profile
+        (color and role by username) is refreshed first, because the host may
+        have changed the role of an offline member in the meantime.
         """
         now = time.time()
         with room.lock:
             for name, m in list(room.members.items()):
                 if not m.online and m.offline_since is not None \
                         and now - m.offline_since > config.REJOIN_WINDOW_S:
+                    room.remember(m)
                     del room.members[name]
 
     def sweep(self, now=None):
         """Housekeeping, called every tick by the heartbeat thread (presence.py).
 
-        For every room: drop offline seats whose rejoin window is over,
-        track since when the room has had no online member, and delete it
-        from memory after ROOM_EMPTY_TTL_S. Returns the deleted codes.
+        Drops, in every room, the offline seats whose rejoin window is over.
+        Rooms themselves are NEVER deleted: an empty room keeps its board,
+        chat, versions and assets for as long as the server runs, so a user
+        can leave and come back later. Returns the list of deleted room
+        codes, which is always empty (kept so callers need no change).
 
         Lock order is always manager.lock, then room.lock (join() never
-        takes manager.lock while holding room.lock), so this cannot
-        deadlock. The final check and the delete happen under BOTH locks:
-        a member that joins at the last moment keeps the room alive, and
-        room.closed stops a join that already holds a reference to it.
+        takes manager.lock while holding room.lock), so this cannot deadlock.
         """
-        now = time.time() if now is None else now
-        deleted = []
         with self.lock:
-            for code, room in list(self.rooms.items()):
-                with room.lock:
-                    self.purge_expired(room)
-                    if room.online_members():
-                        room.empty_since = None
-                        continue
-                    if room.empty_since is None:
-                        room.empty_since = now
-                    elif now - room.empty_since >= ROOM_EMPTY_TTL_S:
-                        room.closed = True
-                        del self.rooms[code]
-                        deleted.append(code)
-        for code in deleted:
-            print("[server] room %s deleted (empty for %d min)" % (code, ROOM_EMPTY_TTL_S // 60))
-        return deleted
+            room_list = list(self.rooms.values())
+        for room in room_list:
+            with room.lock:
+                self.purge_expired(room)
+        return []
 
     def join(self, room, name, session, password=None, token=None):
         """Seat `session` in room as `name`; return (member, rejoin).
@@ -422,21 +430,26 @@ class RoomManager:
              a reconnect (contract E4). Resume the seat (same role, color,
              token); any stale connection still attached to it is closed.
           2. Wrong or missing password: JoinError BAD_PASSWORD.
-          3. A seat with this name exists (online, or offline inside the
-             rejoin window without the right token): JoinError NAME_TAKEN.
-          4. Otherwise a new seat: host if the room has nobody in it (the
-             creator), else editor. Color is the next one in join order.
+          3. A seat with this name exists and its owner is ONLINE: JoinError
+             NAME_TAKEN.
+          4. A seat with this name exists but is OFFLINE (the connection
+             dropped and the client lost its token, e.g. after the 60 s
+             auto-reconnect gave up): the user is coming back, resume it.
+             The password was checked in step 2.
+          5. Otherwise a new seat. A name the room has seen before gets its
+             remembered color and role back (room.profiles); the room's host
+             always gets host back when nobody else holds it. A brand-new
+             name is editor, and the very first user of a room is host.
         """
         with room.lock:
-            # 0. Deleted by sweep() between manager.get() and now.
+            # 0. Deleted room (never happens now, kept as a safety net).
             if room.closed:
                 raise JoinError(protocol.NO_ROOM, "room %s no longer exists" % room.code)
             self.purge_expired(room)
             existing = room.members.get(name)
 
             # 1. Reconnect with token. compare_digest avoids timing leaks.
-            if existing is not None and isinstance(token, str) \
-                    and secrets.compare_digest(existing.token, token):
+            if existing is not None and isinstance(token, str)                     and secrets.compare_digest(existing.token, token):
                 old = existing.session
                 self.resume_member(room, existing, session)
                 if old is not None and old is not session:
@@ -447,13 +460,27 @@ class RoomManager:
             if not room.check_password(password):
                 raise JoinError(protocol.BAD_PASSWORD, "wrong room password")
 
-            # 3. Name must be unique within the room.
-            if existing is not None:
+            # 3. Name must be unique among the members that are online.
+            if existing is not None and existing.online:
                 raise JoinError(protocol.NAME_TAKEN, "the name %r is already in this room" % name)
 
-            # 4. New seat.
-            role = ROLE_HOST if not room.members else ROLE_EDITOR
-            return self.add_member(room, name, role, session), False
+            # 4. Same name, seat offline: take the old seat back.
+            if existing is not None:
+                self.resume_member(room, existing, session)
+                return existing, True
+
+            # 5. New seat, with the remembered color and role if we know the name.
+            profile = room.profiles.get(name)
+            if profile is not None:
+                role, color = profile["role"], profile["color"]
+            else:
+                role = ROLE_HOST if room.host_name is None else ROLE_EDITOR
+                color = None
+            if room.host_name is None:
+                room.host_name = name
+            elif name == room.host_name and not room.has_host():
+                role = ROLE_HOST  # the original host gets host back
+            return self.add_member(room, name, role, session, color), False
 
     def resume_member(self, room, member, session):
         """Attach a new connection to an existing (offline) member seat."""
@@ -482,6 +509,7 @@ class RoomManager:
             if member.online:
                 member.online = False
                 member.offline_since = time.time()
+            room.remember(member)  # color and role survive the seat
             if remove:
                 room.members.pop(member.name, None)
             _run_hooks(_member_left_hooks, room, member)

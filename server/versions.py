@@ -243,6 +243,18 @@ def push_versions(room):
     room.broadcast(protocol.VERSIONS, {'versions': room.versions.meta_list()})
 
 
+def send_versions_on_join(room, member, rejoin, last_seq):
+    """Join step 5: send the joining member the version list, VERSIONS {versions}.
+
+    NOT decorated with @rooms.on_member_joined: server/bootstrap.py registers
+    it AFTER chat.py, so the order a (re)joining client sees is JOIN_OK,
+    USER_LIST, SNAPSHOT, CHAT_HISTORY, VERSIONS. Only the joiner gets it (the
+    others already have the list). rooms.manager.member_joined holds room.lock.
+    """
+    with room.lock:
+        room.send_to(member.name, protocol.VERSIONS, {'versions': room.versions.meta_list()})
+
+
 def auto_version(room, user, name):
     """Save the automatic version board_ops needs before OP_CLEAR (caller holds room.lock)."""
     return take_version(room, name, user)

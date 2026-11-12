@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (QPlainTextEdit, QTabWidget, QTextBrowser, QVBoxLayo
                              QWidget)
 
 from common import protocol
-from client.registry import on_message, register_panel
+from client.registry import on_message, on_session_reset, register_panel
 
 ROOM_TAB = "Room"            # label of the room tab
 ROOM_KEY = "room"            # conversation key of the room; DMs use "dm:<name>"
@@ -345,6 +345,28 @@ class ChatPanel(QWidget):
             self._room = room_code
         self._update_input()
 
+    def reset(self):
+        """The user left the room: drop every conversation and start with an empty Room tab.
+
+        All tabs go (the DM tabs are closed), the Room view forgets its
+        messages and with them the set of seen msg_ids, so the CHAT_HISTORY
+        of the next join is shown in full, once. The input is disabled until
+        the next JOIN_OK.
+        """
+        for key, view in list(self._views.items()):
+            if key == ROOM_KEY:
+                view.clear_messages()
+            else:
+                self.tabs.removeTab(self.tabs.indexOf(view))
+                view.deleteLater()
+                del self._views[key]
+        self._tab_for(ROOM_KEY, switch=True)
+        self._unread.clear()
+        self._last_dm_to = None
+        self._room = None
+        self._link_up = False
+        self._update_input()
+
     def _on_users_changed(self):
         """Colours may have changed (new user, rejoin): re-render every view."""
         for view in self._views.values():
@@ -427,6 +449,14 @@ def _dispatch(msg_type, msg):
         _panel.add_live_dm(payload)
     elif msg_type == protocol.ERROR and payload.get("ref_type") == protocol.DM:
         _panel.on_dm_error(payload)
+
+
+@on_session_reset
+def _on_session_reset(app):
+    """The user left the room: empty the chat panel and forget messages parked for it."""
+    del _pending[:]
+    if _panel is not None:
+        _panel.reset()
 
 
 @on_message(protocol.CHAT_HISTORY)
