@@ -1,13 +1,20 @@
 # OWNER: P4
 """kinds_text.py: KINDS registry and validators for text and sticky objects.
 
-Contract section D (rev 3). Two board kinds with the same fields:
+Contract section D (rev 3 + the text-format fields below). Two board kinds:
 
-    text    {x, y, w, h, text, color, size}    free text in a box, drawn in `color`
-    sticky  {x, y, w, h, text, color, size}    sticky note, `color` is its BACKGROUND
+    text    {x, y, w, h, text, color, size, font, bold, italic, underline, align}
+            free text in a box, drawn in `color`
+    sticky  {x, y, w, h, text, color, size, font, bold, italic, underline, align,
+             text_color}
+            sticky note, `color` is its BACKGROUND, `text_color` the text
 
 x, y, w, h are board units (the box); text is the content, word-wrapped inside
-the box by the renderer; size is the font size in board units.
+the box by the renderer; size is the font size in board units (8-96).
+
+Format fields (all optional; an object saved before they existed still loads
+and gets the defaults): font = family name, bold / italic / underline = bool,
+align = "left", "center" or "right", text_color = '#rrggbb' (sticky only).
 
 Two layers of checking, like common/kinds_draw.py:
 
@@ -36,39 +43,51 @@ NUMBER = (int, float)     # JSON does not distinguish 1 from 1.0
 
 TEXT_MAX_CHARS = 2000     # longest text, in characters
 SIZE_MIN = 8              # smallest font size
-SIZE_MAX = 72             # largest font size
+SIZE_MAX = 96             # largest font size
+FONT_MAX_CHARS = 64       # longest font family name
+
+ALIGNS = ("left", "center", "right")   # allowed values of `align`
 
 LIMITS = {
     "text": [0, TEXT_MAX_CHARS],   # strings: the LENGTH must be in this range
     "size": [SIZE_MIN, SIZE_MAX],  # numbers: the value must be in this range
+    "font": [1, FONT_MAX_CHARS],   # a family name: 1 to 64 characters
+    "align": [4, 6],               # "left"/"right" = 4-5, "center" = 6 characters
 }
+STICKY_LIMITS = dict(LIMITS, text_color=[7, 7])   # '#rrggbb' is exactly 7 characters
 
 # --- The KINDS registry (contract section D) ----------------------------------
 # required: every field with its type. A field that also appears in defaults
 # may be left out by the client; the server fills the default in.
 
 _REQUIRED = {"x": NUMBER, "y": NUMBER, "w": NUMBER, "h": NUMBER,
-             "text": str, "color": str, "size": NUMBER}
+             "text": str, "color": str, "size": NUMBER,
+             "font": str, "bold": bool, "italic": bool, "underline": bool, "align": str}
 
-TEXT_DEFAULTS = {"text": "", "color": "#000000", "size": 18}
-STICKY_DEFAULTS = {"text": "", "color": "#fff176", "size": 16}
+_FORMAT_DEFAULTS = {"font": "Segoe UI", "bold": False, "italic": False,
+                    "underline": False, "align": "left"}
+STICKY_TEXT_COLOR = "#2b2b2b"   # default text color of a sticky (dark on every pastel)
+
+TEXT_DEFAULTS = {"text": "", "color": "#000000", "size": 18, **_FORMAT_DEFAULTS}
+STICKY_DEFAULTS = {"text": "", "color": "#fff176", "size": 16, "text_color": STICKY_TEXT_COLOR,
+                   **_FORMAT_DEFAULTS}
 
 
-def _limits():
-    """Return a fresh copy of LIMITS, so no KINDS entry shares a list with another."""
-    return {field: list(bounds) for field, bounds in LIMITS.items()}
+def _limits(limits):
+    """Return a fresh copy of a limits dict, so no KINDS entry shares a list with another."""
+    return {field: list(bounds) for field, bounds in limits.items()}
 
 
 KINDS = {
     "text": {
         "required": dict(_REQUIRED),
         "defaults": dict(TEXT_DEFAULTS),
-        "limits": _limits(),
+        "limits": _limits(LIMITS),
     },
     "sticky": {
-        "required": dict(_REQUIRED),
+        "required": dict(_REQUIRED, text_color=str),
         "defaults": dict(STICKY_DEFAULTS),
-        "limits": _limits(),
+        "limits": _limits(STICKY_LIMITS),
     },
 }
 
@@ -109,6 +128,12 @@ def check(obj):
         return True, ""
     if not is_color(get(obj, "color")):
         return False, "color must be '#rrggbb'"
+    if obj["kind"] == "sticky" and not is_color(get(obj, "text_color")):
+        return False, "text_color must be '#rrggbb'"
+    if get(obj, "align") not in ALIGNS:
+        return False, "align must be one of %s" % ", ".join(ALIGNS)
+    if not str(get(obj, "font")).strip():
+        return False, "font must not be empty"
     for field in ("x", "y", "w", "h"):
         if not _is_number(obj.get(field)):
             return False, "%s must be a finite number" % field

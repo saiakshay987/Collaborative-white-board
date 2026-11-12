@@ -112,11 +112,13 @@ Roles and permissions (`permissions.can(role, action)`; the creator is host, joi
 | stroke | points [[x,y],...], color '#rrggbb', width 1-40, tool (pen, marker or highlighter), alpha 0-1 | common/kinds_draw.py (P2) |
 | line, arrow | x1, y1, x2, y2, color, width | common/kinds_draw.py (P2) |
 | rect, ellipse | x, y, w, h, color, width, fill (null or '#rrggbb') | common/kinds_draw.py (P2) |
-| text | x, y, w, h, text, color, size | common/kinds_text.py (P4) |
-| sticky | x, y, w, h, text, color (background), size | common/kinds_text.py (P4) |
+| text | x, y, w, h, text, color, size 8-96, font, bold, italic, underline, align | common/kinds_text.py (P4) |
+| sticky | x, y, w, h, text, color (background), size 8-96, font, bold, italic, underline, align, text_color | common/kinds_text.py (P4) |
 | image | x, y, w, h, asset_id | common/kinds_image.py (P3) |
 
 Each `kinds_*.py` exports `KINDS = {kind: {'required': {field: type}, 'defaults': {...}}}`. `models.validate_obj(obj)` returns `(ok, reason)` from the merged registry.
+
+Text format fields (Revision 2, all optional, the server fills the defaults in so objects saved without them still load): `font` (family name, 1-64 characters, default "Segoe UI"), `size` (board units, text 18 / sticky 16), `bold`, `italic`, `underline` (booleans, default false), `align` ("left", "center" or "right", default "left"), and for a sticky `text_color` ('#rrggbb', default '#2b2b2b'; its `color` stays the background). Text is drawn in board units under the canvas transform, so it scales with the box when zooming and in exports. A format change is an ordinary `OP_UPDATE {obj_id, set:{field: value}}`; no new message type.
 
 Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For numbers the value must be within [min, max]; for strings the LENGTH must be. `validate_obj` rejects an object outside its limits with a reason naming the field. The server validates on OP_ADD and on OP_UPDATE (the object after applying `set`), replying ERROR BAD_FORMAT.
 

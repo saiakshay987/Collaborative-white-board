@@ -24,7 +24,7 @@ from PyQt5.QtTest import QTest  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 import client.bootstrap  # noqa: E402,F401  (every registration)
-from client import main_window as mw, registry, render  # noqa: E402
+from client import main_window as mw, registry, render, toolbar  # noqa: E402
 from client.app_state import AppState  # noqa: E402
 from client.board_model import BoardModel  # noqa: E402
 from client.tools import text_tool as tt  # noqa: E402
@@ -48,8 +48,10 @@ class KindsTest(unittest.TestCase):
         """Each kind has "limits": {field: [min, max]}, and LIMITS is the same dict."""
         for kind in ("text", "sticky"):
             limits = models.KINDS[kind]["limits"]
-            self.assertEqual(limits, {"text": [0, 2000], "size": [8, 72]})
-        self.assertEqual(kinds_text.LIMITS, {"text": [0, 2000], "size": [8, 72]})
+            self.assertEqual(limits["text"], [0, 2000])
+            self.assertEqual(limits["size"], [8, 96])
+        self.assertEqual(models.KINDS["sticky"]["limits"]["text_color"], [7, 7])
+        self.assertEqual(kinds_text.LIMITS["size"], [8, 96])
         self.assertIsNot(models.KINDS["text"]["limits"], models.KINDS["sticky"]["limits"])
 
     def test_valid_objects(self):
@@ -60,11 +62,27 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(models.validate_obj(bare), (True, ""))
 
     def test_size_limits(self):
-        """size 8 and 72 pass; 7, 73, NaN, bool and strings fail."""
-        for size, ok in ((8, True), (72, True), (18.5, True), (7, False), (73, False),
+        """size 8 and 96 pass; 7, 97, NaN, bool and strings fail."""
+        for size, ok in ((8, True), (96, True), (18.5, True), (7, False), (97, False),
                          (float("nan"), False), (True, False), ("big", False)):
             with self.subTest(size=size):
                 self.assertEqual(models.validate_obj(make(size=size))[0], ok)
+
+    def test_format_fields(self):
+        """Revision 2 fields: optional (old objects load), typed, limited and defaulted."""
+        full = make(font="Arial", bold=True, italic=False, underline=True, align="center")
+        self.assertEqual(kinds_text.validate(full), (True, ""))
+        self.assertEqual(kinds_text.validate(make("sticky", text_color="#112233")), (True, ""))
+        for bad in ({"bold": "yes"}, {"font": ""}, {"font": "x" * 65}, {"align": 3},
+                    {"underline": 1}):
+            with self.subTest(bad=bad):
+                self.assertFalse(kinds_text.validate(make(**bad))[0])
+        self.assertFalse(models.validate_obj(make("sticky", text_color="#12345678"))[0])
+        # An object saved before the fields existed still loads and gets the defaults.
+        self.assertEqual(kinds_text.get(make(), "font"), "Segoe UI")
+        self.assertEqual(kinds_text.get(make(), "align"), "left")
+        self.assertIs(kinds_text.get(make(), "bold"), False)
+        self.assertEqual(kinds_text.get(make("sticky"), "text_color"), "#2b2b2b")
 
     def test_text_length_limit(self):
         """2000 characters pass, 2001 fail with a reason naming the field; non-strings fail."""
@@ -81,6 +99,8 @@ class KindsTest(unittest.TestCase):
         self.assertFalse(kinds_text.check(make(w=-1))[0])
         self.assertEqual(kinds_text.validate(make()), (True, ""))
         self.assertFalse(kinds_text.validate(make(size=99))[0])
+        self.assertFalse(kinds_text.validate(make(align="justify"))[0])
+        self.assertFalse(kinds_text.validate(make("sticky", text_color="red"))[0])
         self.assertTrue(kinds_text.check({"kind": "rect"})[0])   # other kinds are left alone
 
     def test_get_uses_defaults(self):
@@ -351,20 +371,21 @@ class ToolTest(unittest.TestCase):
         self.assertEqual((geo.x(), geo.y()), (50 + 900, 50 + 920))
 
     def test_sticky_palette_cycles_only_when_sent(self):
-        """Six different colors in order, then it starts over; a cancelled note uses none up."""
+        """The palette colors in order, then it starts over; a cancelled note uses none up."""
         self.window.select_tool("sticky")
         self.click(1000, 1000)
         QTest.keyClick(self.editor(), Qt.Key_Escape)               # cancelled
         colors = []
-        for i in range(7):
+        count = len(tt.STICKY_PALETTE)
+        for i in range(count + 1):
             self.click(400 + i * 10, 1500)
             QTest.keyClicks(self.editor(), "note %d" % i)
             QTest.keyClick(self.editor(), Qt.Key_Return)
             self.qapp.processEvents()
             colors.append(self.sent()[-1][1]["obj"]["color"])
-        self.assertEqual(colors[:6], list(tt.STICKY_PALETTE))
-        self.assertEqual(len(set(colors[:6])), 6)
-        self.assertEqual(colors[6], tt.STICKY_PALETTE[0])
+        self.assertEqual(colors[:count], list(tt.STICKY_PALETTE))
+        self.assertEqual(len(set(colors[:count])), count)
+        self.assertEqual(colors[count], tt.STICKY_PALETTE[0])
         sticky = self.sent()[-1][1]["obj"]
         self.assertEqual((sticky["kind"], sticky["w"], sticky["h"], sticky["size"]), ("sticky", 200, 160, 16))
         self.assertEqual(kinds_text.validate(sticky), (True, ""))
@@ -411,6 +432,146 @@ class ToolTest(unittest.TestCase):
         QTest.mouseClick(self.canvas, Qt.LeftButton, Qt.NoModifier, self.scr(3000, 2500))
         self.qapp.processEvents()
         self.assertEqual(self.sent(), [("OP_UPDATE", {"obj_id": sticky_id, "set": {"text": "second"}})])
+
+    # -- format bar (client/toolbar.py) and text formatting ------------------------------
+    def format_bar(self):
+        """The FormatBar of the tool dock, refreshed from the current tool and selection."""
+        bar = toolbar._dock._format_box
+        bar.refresh()
+        return bar
+
+    def select_object(self, obj_id, x, y):
+        """Switch to the select tool and click board point (x, y) so obj_id is selected."""
+        self.window.select_tool("select")
+        self.click(x, y)
+        self.assertEqual(self.app.active_tool.selected_id, obj_id)
+
+    def test_format_bar_visibility(self):
+        """Hidden for the pen, shown for the text and sticky tools; the sticky also has the palette."""
+        self.window.select_tool("pen")
+        self.assertTrue(self.format_bar().isHidden())
+        self.window.select_tool("text")
+        bar = self.format_bar()
+        self.assertFalse(bar.isHidden())
+        self.assertTrue(bar._bg_box.isHidden())
+        self.window.select_tool("sticky")
+        bar = self.format_bar()
+        self.assertFalse(bar.isHidden())
+        self.assertFalse(bar._bg_box.isHidden())
+        self.assertEqual(len(bar._bg_swatches), 8)
+
+    def test_format_bar_updates_the_selected_text(self):
+        """With a text selected, each control sends one OP_UPDATE {obj_id, set:{field}}."""
+        text_id = self.add_text_via_tool("Hello")
+        self.select_object(text_id, 150, 130)
+        bar = self.format_bar()
+        self.assertFalse(bar.isHidden())
+        self.assertEqual(bar._size.value(), 18)
+        self.app.net.sent.clear()
+        bar._size.setValue(40)
+        bar._flags["bold"].click()
+        bar._aligns["center"].click()
+        bar._send({"font": "Arial"})
+        bar._send({}, ink="#ff0000")
+        self.assertEqual(self.sent(), [
+            ("OP_UPDATE", {"obj_id": text_id, "set": {"size": 40}}),
+            ("OP_UPDATE", {"obj_id": text_id, "set": {"bold": True}}),
+            ("OP_UPDATE", {"obj_id": text_id, "set": {"align": "center"}}),
+            ("OP_UPDATE", {"obj_id": text_id, "set": {"font": "Arial"}}),
+            ("OP_UPDATE", {"obj_id": text_id, "set": {"color": "#ff0000"}})])
+        obj = self.app.board.objects[text_id]
+        self.assertEqual((obj["size"], obj["bold"], obj["align"], obj["font"], obj["color"]),
+                         (40, True, "center", "Arial", "#ff0000"))
+        self.assertEqual(kinds_text.validate(obj), (True, ""))
+        self.assertTrue(bar._flags["bold"].isChecked())
+        self.assertTrue(bar._aligns["center"].isChecked())
+
+    def test_format_bar_updates_a_selected_sticky(self):
+        """A sticky's text color goes to text_color and its background to color."""
+        self.window.select_tool("sticky")
+        self.click(500, 500)
+        QTest.keyClicks(self.editor(), "note")
+        QTest.keyClick(self.editor(), Qt.Key_Return)
+        self.qapp.processEvents()
+        sticky_id = self.sent()[-1][1]["obj"]["id"]
+        self.select_object(sticky_id, 500, 500)
+        bar = self.format_bar()
+        self.app.net.sent.clear()
+        bar._send({}, ink="#112233")
+        bar._send({}, bg="#90caf9")
+        self.assertEqual(self.sent(), [
+            ("OP_UPDATE", {"obj_id": sticky_id, "set": {"text_color": "#112233"}}),
+            ("OP_UPDATE", {"obj_id": sticky_id, "set": {"color": "#90caf9"}})])
+        bar._send({"size": 500})                                    # outside 8-96: refused
+        self.assertEqual(len(self.sent()), 2)
+        self.assertIn("size", self.toasts[-1])
+
+    def test_format_bar_sets_defaults_of_the_next_object(self):
+        """With nothing selected the bar changes the format of the NEXT text / sticky only."""
+        tt._new_overrides["text"].clear()
+        tt._new_overrides["sticky"].clear()
+        self.window.select_tool("text")
+        bar = self.format_bar()
+        bar._size.setValue(30)
+        bar._flags["italic"].click()
+        bar._aligns["right"].click()
+        self.assertEqual(self.sent(), [])                           # nothing goes to the network
+        self.drag((100, 100), (400, 220))
+        QTest.keyClicks(self.editor(), "next")
+        QTest.keyClick(self.editor(), Qt.Key_Return)
+        self.qapp.processEvents()
+        obj = self.sent()[-1][1]["obj"]
+        self.assertEqual((obj["size"], obj["italic"], obj["align"], obj["bold"]), (30, True, "right", False))
+        self.assertEqual(kinds_text.validate(obj), (True, ""))
+        self.window.select_tool("sticky")
+        bar = self.format_bar()
+        bar._send({}, bg="#e0e0e0")
+        bar._send({}, ink="#aa0000")
+        self.click(1000, 1000)
+        QTest.keyClicks(self.editor(), "note")
+        QTest.keyClick(self.editor(), Qt.Key_Return)
+        self.qapp.processEvents()
+        sticky = self.sent()[-1][1]["obj"]
+        self.assertEqual((sticky["color"], sticky["text_color"], sticky["size"]), ("#e0e0e0", "#aa0000", 16))
+        tt._new_overrides["text"].clear()
+        tt._new_overrides["sticky"].clear()
+
+    def test_editor_font_follows_zoom_and_style(self):
+        """The overlay font is size x zoom in the object's family/style and is redone on zoom."""
+        text_id = self.add_text_via_tool("Hello")
+        self.app.board.objects[text_id].update(size=20, bold=True, font="Arial", align="center")
+        self.window.select_tool("select")
+        QTest.mouseDClick(self.canvas, Qt.LeftButton, Qt.NoModifier, self.scr(150, 130))
+        ed = self.editor()
+        self.assertEqual((ed.font().pixelSize(), ed.font().bold(), ed.font().family()), (20, True, "Arial"))
+        self.assertTrue(ed.document().defaultTextOption().alignment() & Qt.AlignHCenter)
+        self.canvas.set_zoom(2.0)
+        ed._sync_geometry()
+        self.assertEqual(ed.font().pixelSize(), 40)
+        self.assertEqual(ed.geometry().width(), int(self.app.board.objects[text_id]["w"] * 2.0))
+        QTest.keyClick(ed, Qt.Key_Escape)
+
+    def test_text_scales_with_the_zoom(self):
+        """The same object painted at zoom 1 and 3 has the same ink bounds in board units."""
+        obj = make(x=10, y=10, w=300, h=120, size=24, text="Zoom test of wrapping text here")
+
+        def bounds(zoom):
+            image = QImage(int(340 * zoom), int(160 * zoom), QImage.Format_ARGB32)
+            image.fill(QColor("white"))
+            painter = QPainter(image)
+            painter.scale(zoom, zoom)
+            render.render_board(painter, {"a": dict(obj, z=1)}, {})
+            painter.end()
+            dark = [(x, y) for y in range(image.height()) for x in range(image.width())
+                    if QColor(image.pixel(x, y)).lightness() < 128]
+            xs, ys = [d[0] for d in dark], [d[1] for d in dark]
+            return (min(xs) / zoom, max(xs) / zoom, min(ys) / zoom, max(ys) / zoom) if dark else None
+
+        one, three = bounds(1), bounds(3)
+        if one is None or three is None:
+            self.skipTest("no fonts on this Qt platform")
+        for a, b in zip(one, three):
+            self.assertAlmostEqual(a, b, delta=2.0)
 
     def test_object_deleted_while_editing(self):
         """If the object disappears during the edit, nothing is sent and the user gets a toast."""
