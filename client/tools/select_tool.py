@@ -49,6 +49,10 @@ anchor (x, y / x1, y1 / first point) is snapped with canvas.snap() and the
 whole object follows by the same offset; a resize puts the dragged corner on
 the snapped mouse point. So the server only ever stores snapped values.
 
+Page rule: a move is limited so the object's box stays inside the page (it
+stops at the edge; clamp_rect from canvas.py), and the canvas already clamps
+the dragged corner of a resize to the page.
+
 Viewers: the tool dock already clears the active tool for a viewer, and
 this tool refuses to select (toast) as a second guard. The server checks
 permissions.can(role, 'draw') on every OP_UPDATE / OP_DELETE anyway.
@@ -57,10 +61,11 @@ permissions.can(role, 'draw') on every OP_UPDATE / OP_DELETE anyway.
 import copy
 import time
 
-from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPointF, QRectF, QSizeF, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QPen
 
 from client import ops, registry
+from client.canvas import clamp_rect
 from client.tools.pen_tool import _num, topmost_hit
 from client.tools.shape_tools import round1
 from common import protocol
@@ -103,9 +108,14 @@ def box_of(obj):
                   _num(obj.get("w")), _num(obj.get("h"))).normalized()
 
 
-def tight_bounds(obj):
-    """Bounding QRectF of an object in board units (half the line width included), or None."""
-    half = _num(obj.get("width"), 0.0) / 2.0
+def tight_bounds(obj, with_width=True):
+    """Bounding QRectF of an object in board units, or None.
+
+    Half the line width is included (it is where the ink really ends) unless
+    with_width is False: that gives the box of the stored COORDINATES, which
+    is what the page rule is about (the validators check coordinates).
+    """
+    half = _num(obj.get("width"), 0.0) / 2.0 if with_width else 0.0
     pts = _points(obj)
     if pts:
         xs, ys = [_num(p[0]) for p in pts], [_num(p[1]) for p in pts]
@@ -155,8 +165,10 @@ def resized_fields(fixed, moving):
     corner past the opposite one flips the box instead of breaking it.
     """
     rect = QRectF(fixed, moving).normalized()
+    rect.setSize(QSizeF(max(MIN_SIZE, rect.width()), max(MIN_SIZE, rect.height())))
+    rect = clamp_rect(rect)          # MIN_SIZE may push a box at the edge over it
     return {"x": round1(rect.x()), "y": round1(rect.y()),
-            "w": round1(max(MIN_SIZE, rect.width())), "h": round1(max(MIN_SIZE, rect.height()))}
+            "w": round1(rect.width()), "h": round1(rect.height())}
 
 
 class SelectTool:
@@ -313,7 +325,16 @@ class SelectTool:
             anchor = anchor_of(self._orig)
             target = canvas.snap(QPointF(anchor.x() + raw.x() - self._press.x(),
                                          anchor.y() + raw.y() - self._press.y()))
-            return moved_fields(self._orig, target.x() - anchor.x(), target.y() - anchor.y())
+            dx, dy = target.x() - anchor.x(), target.y() - anchor.y()
+            # Page rule: push the moved box back inside the page, so the
+            # object stops at the edge instead of leaving it.
+            box = tight_bounds(self._orig, with_width=False)
+            if box is not None:
+                moved = box.translated(dx, dy)
+                inside = clamp_rect(moved)
+                dx += inside.x() - moved.x()
+                dy += inside.y() - moved.y()
+            return moved_fields(self._orig, dx, dy)
         if self._mode == "resize":
             return resized_fields(self._fixed, QPointF(p))
         return None
