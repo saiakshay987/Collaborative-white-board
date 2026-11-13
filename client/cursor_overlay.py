@@ -194,7 +194,7 @@ class CursorOverlay(QWidget):
         self.colors = {}             # user name -> colour string, from app.users
         self.arrow = _arrow_path()
         self.label_font = QFont(self.font())
-        self.label_font.setPointSizeF(max(8.0, self.label_font.pointSizeF() - 1))
+        self.label_font.setPointSizeF(theme.SMALL_PT)
         self.label_font.setBold(True)
 
         # Purely visual: never take the mouse or keyboard from the canvas.

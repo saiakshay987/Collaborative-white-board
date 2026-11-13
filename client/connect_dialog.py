@@ -32,7 +32,7 @@ import html
 import threading
 import time
 
-from PyQt5.QtCore import QSettings, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog, QFormLayout,
                              QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -141,7 +141,7 @@ class ConnectDialog(QDialog):
     # widgets are only ever touched on the GUI thread.
     _addresses_ready = pyqtSignal(object)        # list of netinfo.Address
     _test_done = pyqtSignal(bool, str, float)    # ok, message, seconds
-    _rooms_ready = pyqtSignal(str, object, str)  # host asked, list of rows (or None), error text
+    _rooms_ready = pyqtSignal(str, object, str)  # "host:port" asked, list of rows (or None), error text
 
     def __init__(self, app, parent=None, notice=None, prefill=None):
         """Build the tabs for AppState app (app.net must be a NetClient).
@@ -173,6 +173,7 @@ class ConnectDialog(QDialog):
         self._test_done.connect(self._show_test_result)
         self._rooms_ready.connect(self._show_rooms)
         self._rooms_busy = False                  # a room-list request is in flight
+        self._rooms_again = None                  # request asked for while busy: "manual", "auto" or None
         self._room_timer = QTimer(self)           # auto-refresh; stopped in done()
         self._room_timer.timeout.connect(self._auto_refresh)
         self._room_timer.start(ROOM_REFRESH_MS)
@@ -183,6 +184,7 @@ class ConnectDialog(QDialog):
         if notice:
             self._show_notice(notice)
             self.tabs.setCurrentIndex(1)    # a user who left would join again, not host
+        self._focus_first_field()
         QTimer.singleShot(0, self._auto_refresh)    # list the rooms of the remembered server at once
 
     # ----------------------------------------------------------------- layout
@@ -198,6 +200,9 @@ class ConnectDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setObjectName("connectTabs")
         self.tabs.tabBar().hide()
+        # The tab bar is hidden, so the tab widget itself must not take focus: it
+        # would hand it straight back to the switch and Tab could never leave it.
+        self.tabs.setFocusPolicy(Qt.NoFocus)
 
         host_tab = QWidget()
         form = self._form(host_tab)
@@ -286,8 +291,9 @@ class ConnectDialog(QDialog):
             btn.setAutoDefault(False)
             btn.setToolTip(tip)
             btn.setProperty("iconName", icon)
-            btn.setIconSize(QSize(18, 18))
+            btn.setIconSize(QSize(theme.ICON_TEXT, theme.ICON_TEXT))
             btn.clicked.connect(lambda _checked, i=index: self.tabs.setCurrentIndex(i))
+            btn.installEventFilter(self)          # Left / Right switch Host and Join
             self._segments.addButton(btn, index)
             row.addWidget(btn, 1)
         self.tabs.currentChanged.connect(self._sync_switch)
@@ -336,6 +342,32 @@ class ConnectDialog(QDialog):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         return form
 
+    def _page_fields(self):
+        """The text fields of the visible page, top to bottom."""
+        if self.tabs.currentIndex() == 0:
+            return [self.host_name, self.host_pw]
+        return [self.join_ip, self.join_code, self.join_name, self.join_pw]
+
+    def _focus_first_field(self):
+        """Put the cursor in the first empty field (the password when all others are filled)."""
+        fields = self._page_fields()
+        empty = [f for f in fields[:-1] if not f.text().strip()]
+        (empty[0] if empty else fields[-1]).setFocus()
+
+    def eventFilter(self, obj, event):
+        """Left / Right on the Host-Join switch change the page, like a segmented control.
+
+        Tab reaches the switch once (Qt gives Tab focus only to the checked
+        button of an exclusive group); the arrows then pick the other page.
+        """
+        if (event.type() == QEvent.KeyPress and obj in self._segments.buttons()
+                and event.key() in (Qt.Key_Left, Qt.Key_Right)):
+            index = 0 if event.key() == Qt.Key_Left else 1
+            self.tabs.setCurrentIndex(index)
+            self._segments.button(index).setFocus()
+            return True
+        return super().eventFilter(obj, event)
+
     def _sync_switch(self, index):
         """Check the switch button of the visible page and paint its icons for the theme."""
         t = theme.tokens()
@@ -343,7 +375,7 @@ class ConnectDialog(QDialog):
             i = self._segments.id(button)
             button.setChecked(i == index)
             colour = t["primary_text"] if i == index else t["text_soft"]
-            button.setIcon(icons.get_icon(button.property("iconName"), 18, colour))
+            button.setIcon(icons.get_icon(button.property("iconName"), theme.ICON_TEXT, colour))
 
     def _build_ready_page(self):
         """Page 1 (host only): room code and the server's IPs in large, readable text.
@@ -358,12 +390,12 @@ class ConnectDialog(QDialog):
         self.ip_label = QLabel("Looking up addresses...")
         self.ip_label.setObjectName("serverIp")
         code_font = QFont()
-        code_font.setPointSize(30)
+        code_font.setPointSize(theme.HERO_PT)
         code_font.setBold(True)
         code_font.setLetterSpacing(QFont.AbsoluteSpacing, 4)
         self.code_label.setFont(code_font)
         ip_font = QFont()
-        ip_font.setPointSize(22)
+        ip_font.setPointSize(theme.HEADLINE_PT)
         ip_font.setBold(True)
         self.ip_label.setFont(ip_font)
         for label in (self.code_label, self.ip_label):
@@ -503,7 +535,6 @@ class ConnectDialog(QDialog):
         if prefill.get("username"):
             self.join_name.setText(prefill["username"])
         self.tabs.setCurrentIndex(1)
-        self.join_pw.setFocus()
 
     def _remember(self, ip, name):
         """Store the Join fields for next time."""
@@ -561,6 +592,9 @@ class ConnectDialog(QDialog):
                 self.rooms_status.setText("Enter the server address first.")
             return
         if self._rooms_busy:
+            # One request at a time. A click (or a changed address) while an older
+            # request runs is not lost: it runs as soon as that answer is in.
+            self._rooms_again = "manual" if manual else (self._rooms_again or "auto")
             return
         self._rooms_busy = True
         if manual:
@@ -573,14 +607,23 @@ class ConnectDialog(QDialog):
         """Thread: fetch the list (a short-lived connection, see net_client.fetch_room_list) and report back."""
         rows, error = net_client.fetch_room_list(host, port)
         try:
-            self._rooms_ready.emit(host, rows, error or "")
+            self._rooms_ready.emit("%s:%d" % (host, port), rows, error or "")
         except RuntimeError:
             pass  # the dialog was closed meanwhile
 
-    def _show_rooms(self, host, rows, error):
-        """GUI thread: fill the table (or show why not). An answer for an IP the user has since changed is dropped."""
+    def _show_rooms(self, asked, rows, error):
+        """GUI thread: fill the table (or show why not).
+
+        asked is "host:port" of the request. An answer for an address the user
+        has since changed (host OR port) is dropped, and a request that waited
+        behind this one (_rooms_again) runs now.
+        """
         self._rooms_busy = False
-        if host != parse_server(self.join_ip.text())[0]:
+        if self._rooms_again:
+            queued, self._rooms_again = self._rooms_again, None
+            self._find_rooms(manual=queued == "manual")
+        host, port = parse_server(self.join_ip.text())
+        if asked != "%s:%d" % (host, port):
             return
         if rows is None:
             self._tone(self.rooms_status, "error")

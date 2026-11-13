@@ -24,12 +24,22 @@ Public API
     notifier.changed(str)          Qt signal emitted after every theme change
     set_pill(label, kind)          make a QLabel a pill badge (neutral, primary,
                                    success, warning, danger)
+    retint_widget_styles(app, old, new)
+                                   after a switch, text-colour tokens written into
+                                   a widget's own style sheet follow the new mode
+    contrast_ratio(fg, bg)         WCAG ratio; every text token pair is >= 4.5:1
+                                   (checked by scripts/a_ui_smoke.py)
+
+Sizes: one font scale (SMALL_PT 9, BODY_PT 10, TITLE_PT 12, DISPLAY_PT 16 and,
+on the host's "room ready" page only, HEADLINE_PT 22 and HERO_PT 30) and two
+icon sizes (ICON_SIZE 20 for icon-only buttons, ICON_TEXT 16 next to text).
 
 Performance: the style sheet is applied only by apply_theme (start-up and
 the menu toggle), never while drawing, and nothing here touches the canvas.
 Everything runs on the GUI thread.
 """
 
+import re
 from string import Template
 
 from PyQt5.QtCore import QObject, QSettings, QSize, Qt, pyqtSignal
@@ -53,13 +63,14 @@ TOKENS = {
         "border_strong": "#D5D9DF",  # input and button outlines
         "text": "#1F2430",
         "text_soft": "#4B5563",     # icons, secondary text that must stay readable
-        "muted": "#6B7280",
+        "muted": "#5F6673",          # 4.5:1 or more on bg, surface, surface_alt and hover
         "disabled_text": "#A0A6B1",
         "disabled_bg": "#F1F2F4",
-        "primary": "#3B82F6",
-        "primary_hover": "#2563EB",
+        "primary": "#2563EB",       # white text on it: 5.2:1
+        "primary_hover": "#1D4ED8",
         "primary_soft": "#E8F0FE",
-        "primary_text": "#2563EB",  # primary used as text (stronger, for contrast)
+        "primary_text": "#1D4ED8",  # primary used as text (stronger, for contrast)
+        "focus": "#1D4ED8",         # keyboard focus ring
         "on_primary": "#FFFFFF",
         "success": "#22C55E",
         "success_soft": "#DCFCE7",
@@ -94,6 +105,7 @@ TOKENS = {
         "primary_hover": "#93C5FD",
         "primary_soft": "#22324D",
         "primary_text": "#93C5FD",
+        "focus": "#93C5FD",
         "on_primary": "#0B1220",
         "success": "#4ADE80",
         "success_soft": "#173326",
@@ -119,9 +131,19 @@ MODES = ("light", "dark")
 RADIUS_CONTROL = 8
 RADIUS_CARD = 12
 FONT_STACK = ("Inter", "Segoe UI", "Ubuntu", "Cantarell", "Arial")
-BODY_PT = 10
-SMALL_PT = 9
+# The one font scale of the UI (points). Every size in the style sheet and in
+# P1's widgets is one of these; nothing else sets a point size.
+SMALL_PT = 9        # pills, hints, section titles of the tool rail, graph labels
+BODY_PT = 10        # everything else
+TITLE_PT = 12       # brand name, metric values
+DISPLAY_PT = 16     # connect dialog title
+HEADLINE_PT = 22    # the host's IP on the "room ready" page (read out to the lab)
+HERO_PT = 30        # the room code on the "room ready" page
+# Icon sizes: ICON_SIZE for every icon-only button (tool rail, top bar, panel
+# headers, history buttons, send); ICON_TEXT for an icon next to text (push
+# buttons with a label, menu entries, pills, dock titles, segments).
 ICON_SIZE = 20
+ICON_TEXT = 16
 
 # QSettings: same organisation/application as the rest of the client.
 SETTINGS_ORG = "CN Lab"
@@ -168,6 +190,10 @@ FORMAT_TOGGLES = {"B": None, "I": None, "U": None,
                   "L": "align_left", "C": "align_center", "R": "align_right"}
 
 THEME_MENU_LABEL = "Toggle dark theme"
+
+# Height of every panel header (DockHeader in shell.py) and of the bottom tab bar
+# (the tab's 2 px underline is part of it), so all panels line up.
+TAB_BAR_H = 36
 
 _mode = "light"
 
@@ -262,26 +288,16 @@ QMenuBar::item:pressed { background: $primary_soft; color: $primary_text; }
 QMenu {
     background: $surface; border: 1px solid $border; border-radius: ${rc}px; padding: 4px;
 }
-QMenu::item { padding: 6px 28px 6px 12px; border-radius: 6px; background: transparent; }
+/* No padding / radius on QMenu::item: with a box rule Qt leaves the icon column out of
+   the menu width and long entries run into their shortcut ("tool rail" / "Ctrl+1"). */
 QMenu::item:selected { background: $primary_soft; color: $primary_text; }
 QMenu::item:disabled { color: $disabled_text; }
-QMenu::icon { padding-left: 8px; }
 QMenu::separator { height: 1px; background: $border; margin: 4px 8px; }
 
 /* ---- tool bars ---- */
 QToolBar { background: $surface; border: none; border-bottom: 1px solid $border; padding: 4px 6px; spacing: 4px; }
 QToolBar::separator { background: $border; width: 1px; margin: 4px 6px; }
 QToolBar QToolButton { padding: 4px; }
-
-/* ---- docks: light panels separated by thin gaps ---- */
-QDockWidget { font-weight: 600; titlebar-close-icon: url($close_icon); }
-QDockWidget::title {
-    background: $surface; padding: 8px 10px; border-bottom: 1px solid $border; text-align: left;
-}
-QDockWidget::close-button, QDockWidget::float-button {
-    border: none; background: transparent; border-radius: 4px; padding: 2px;
-}
-QDockWidget::close-button:hover, QDockWidget::float-button:hover { background: $hover; }
 
 /* ---- tabs (chat conversations, tabbed docks, connect dialog) ---- */
 QTabWidget::pane { border: 1px solid $border; border-radius: ${rc}px; background: $surface; top: -1px; }
@@ -292,6 +308,7 @@ QTabBar::tab {
 }
 QTabBar::tab:hover { color: $text; }
 QTabBar::tab:selected { color: $primary_text; border-bottom: 2px solid $primary; }
+QTabBar::tab:focus { color: $text; background: $hover; }
 QTabBar::tab:disabled { color: $disabled_text; }
 QTabBar::close-button { image: url($close_icon); subcontrol-position: right; border-radius: 4px; }
 QTabBar::close-button:hover { background: $hover; }
@@ -303,15 +320,19 @@ QPushButton {
 }
 QPushButton:hover { background: $hover; }
 QPushButton:pressed { background: $pressed; }
-QPushButton:focus { border: 1px solid $primary; }
+QPushButton:focus { border: 1px solid $focus; }
 QPushButton:checked { background: $primary_soft; color: $primary_text; border-color: $primary; }
-QPushButton:disabled { background: $disabled_bg; color: $disabled_text; border-color: $border; }
+QPushButton:disabled, QPushButton:checked:disabled {
+    background: $disabled_bg; color: $disabled_text; border-color: $border;
+}
 QPushButton[primary="true"] {
     background: $primary; color: $on_primary; border-color: $primary; font-weight: 600;
 }
 QPushButton[primary="true"]:hover {
     background: $primary_hover; border-color: $primary_hover;
 }
+QPushButton[primary="true"]:pressed { background: $primary_hover; border-color: $primary_hover; }
+QPushButton[primary="true"]:focus { border: 2px solid $text; }
 QPushButton[primary="true"]:disabled {
     background: $disabled_bg; color: $disabled_text; border-color: $border;
 }
@@ -320,6 +341,8 @@ QPushButton[danger="true"]:hover { background: $danger_soft; border-color: $dang
 QPushButton[danger="true"]:disabled { color: $disabled_text; background: $disabled_bg; }
 QPushButton[flat="true"] { background: transparent; border-color: transparent; }
 QPushButton[flat="true"]:hover { background: $hover; }
+QPushButton[flat="true"]:pressed { background: $pressed; }
+QPushButton[flat="true"]:focus { border-color: $focus; }
 
 /* ---- tool buttons (tool rail, format toggles, small actions) ---- */
 QToolButton {
@@ -329,8 +352,9 @@ QToolButton {
 QToolButton:hover { background: $hover; }
 QToolButton:pressed { background: $pressed; }
 QToolButton:checked { background: $primary_soft; color: $primary_text; }
-QToolButton:focus { border: 1px solid $primary; }
+QToolButton:focus { border: 1px solid $focus; }
 QToolButton:disabled { color: $disabled_text; }
+QToolButton:checked:disabled { background: $disabled_bg; color: $disabled_text; }
 QToolButton#toolButton { padding: 6px 8px; text-align: left; }
 QToolButton#toolButton:checked { font-weight: 600; }
 QToolButton#formatToggle { border: 1px solid $border_strong; padding: 2px; }
@@ -347,7 +371,7 @@ QLineEdit:hover, QPlainTextEdit:hover, QTextEdit:hover, QSpinBox:hover, QComboBo
     border-color: $muted;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QComboBox:focus {
-    border-color: $primary;
+    border-color: $focus;
 }
 QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled, QSpinBox:disabled,
 QComboBox:disabled {
@@ -380,6 +404,7 @@ QSlider::handle:horizontal {
     margin: -6px 0; border-radius: 8px;
 }
 QSlider::handle:horizontal:hover { background: $primary_soft; }
+QSlider:focus { border: 1px solid $focus; border-radius: 6px; }
 QSlider::sub-page:horizontal:disabled { background: $disabled_text; }
 QSlider::handle:horizontal:disabled { border-color: $disabled_text; background: $disabled_bg; }
 
@@ -397,6 +422,9 @@ QListView, QListWidget, QTableView, QTableWidget, QTreeView {
     background: $surface; alternate-background-color: $surface_alt; color: $text;
     border: 1px solid $border; border-radius: ${rc}px; gridline-color: $border; outline: 0;
     selection-background-color: $primary_soft; selection-color: $primary_text;
+}
+QListView:focus, QListWidget:focus, QTableView:focus, QTableWidget:focus, QTreeView:focus {
+    border-color: $focus;
 }
 QListView::item, QTableView::item { padding: 4px 6px; border: none; }
 QListView::item:hover, QTableView::item:hover { background: $hover; }
@@ -419,20 +447,17 @@ QGroupBox::title {
 }
 FormatBar {
     background: $surface_alt; border: 1px solid $border; border-radius: ${rk}px;
-    margin-top: 20px; padding: 10px 8px 8px 8px;
+    margin-top: 18px; padding: 10px 8px 8px 8px; font-size: ${body}pt;
 }
 FormatBar::title { left: 4px; }
 
 /* ---- status bar ---- */
-QStatusBar { background: $surface; border-top: 1px solid $border; color: $muted; }
+QStatusBar { background: $surface; border-top: 1px solid $border; color: $muted; min-height: 28px; }
 QStatusBar::item { border: none; }
 QStatusBar QLabel { color: $muted; }
 
-/* ---- splitters, frames, progress ---- */
-QSplitter::handle { background: $border; }
+/* ---- cards ---- */
 QFrame[card="true"] { background: $surface; border: 1px solid $border; border-radius: ${rk}px; }
-QProgressBar { background: $hover; border: none; border-radius: 4px; height: 8px; text-align: center; }
-QProgressBar::chunk { background: $primary; border-radius: 4px; }
 
 /* ---- small text roles and pill badges ---- */
 QLabel[muted="true"] { color: $muted; font-size: ${small}pt; }
@@ -450,14 +475,11 @@ QToolButton#statsChip:hover { border-color: $primary; }
 
 /* ---- shell: top bar, compact rail, dock scroll areas, compact history buttons ---- */
 QToolBar#toolbar_top { padding: 4px 10px; spacing: 4px; }
-QLabel#brand { font-weight: 700; font-size: 11pt; }
+QLabel#brand { font-weight: 700; font-size: ${title}pt; }
 QScrollArea#dockScroll { background: transparent; border: none; }
 QScrollArea#dockScroll > QWidget > QWidget { background: transparent; }
 ToolDock QGroupBox { font-size: ${small}pt; border: none; margin-top: 14px; padding-top: 4px; }
-ToolDock FormatBar {
-    font-size: ${body}pt; border: 1px solid $border; margin-top: 18px; padding: 10px 8px 8px 8px;
-}
-QStatusBar { min-height: 28px; }
+ToolDock FormatBar { border: 1px solid $border; }
 
 /* ---- styling hooks set by the owners' files (approved UI handoff) ---- */
 #command_bar { background: $surface; border: 1px solid $border_strong; border-radius: ${rc}px; }
@@ -470,6 +492,7 @@ QToolButton#swatch:checked {
     border: 2px solid $primary; padding: 2px; background-clip: content; border-radius: 12px;
 }
 QToolButton#swatch:disabled { border: 1px dashed $disabled_text; }
+QToolButton#swatch:focus, QToolButton#inkSwatch:focus { border: 2px solid $focus; }
 QLabel#currentSwatch { border: 1px solid $border_strong; border-radius: 12px; }
 QLabel#viewerHint {
     background: $warning_soft; color: $warning_text; border: 1px solid $warning_soft;
@@ -493,12 +516,12 @@ QToolButton#sendButton:hover { background: $primary_hover; }
 QToolButton#sendButton:pressed { background: $primary_hover; }
 QToolButton#sendButton:disabled { background: $disabled_bg; }
 QFrame#metricTile { background: $surface_alt; }
-QLabel#metricValue { font-size: 12pt; font-weight: 600; }
+QLabel#metricValue { font-size: ${title}pt; font-weight: 600; }
 
 /* ---- connect dialog: landing card (phase 4) ---- */
 QDialog#connectDialog { background: $bg; }
 QFrame#connectCard { background: $surface; border: 1px solid $border; border-radius: ${rk}px; }
-QLabel#connectTitle { font-size: 16pt; font-weight: 700; }
+QLabel#connectTitle { font-size: ${display}pt; font-weight: 700; }
 QFrame#segmented { background: $surface_alt; border: 1px solid $border; border-radius: ${rc}px; }
 QPushButton#segment {
     background: transparent; border: 1px solid transparent; border-radius: 6px;
@@ -516,18 +539,20 @@ QLabel[tone="error"] { background: $danger_soft; color: $danger_text; }
 QLabel[tone="warning"] { background: $warning_soft; color: $warning_text; }
 QLabel[tone="success"] { background: $success_soft; color: $success_text; }
 QLabel[tone="info"] { background: $primary_soft; color: $primary_text; }
-QLabel[toneText="error"] { color: $danger_text; }
+QLabel[toneText="error"], QLabel[toneText="danger"] { color: $danger_text; }
+QLabel[toneText="muted"] { color: $muted; }
 QLabel[toneText="warning"] { color: $warning_text; }
 QLabel[toneText="success"] { color: $success_text; }
 
 /* ---- dock headers, compact rail, bottom tabs (phase 4B) ---- */
 QWidget#dockHeader { background: $surface; border-bottom: 1px solid $border; }
+QWidget#dockHeader QToolButton#dockCollapse:focus { border: 1px solid $focus; }
 QLabel#dockTitle { font-weight: 600; }
 QToolButton#dockCollapse { padding: 2px; border-radius: 6px; }
 QFrame#railDivider { background: $border; border: none; }
 QWidget#compactRail { background: transparent; }
 QMainWindow > QTabBar { background: $surface; border-bottom: 1px solid $border; }
-QMainWindow > QTabBar::tab { min-height: 22px; padding: 6px 14px; }
+QMainWindow > QTabBar::tab { min-height: ${tabh}px; padding: 0px 14px; }
 
 /* ---- toasts (phase 4) ---- */
 QFrame#toast { background: $surface; border: 1px solid $border_strong; border-radius: ${rk}px; }
@@ -547,7 +572,8 @@ def build_stylesheet(mode):
     PNGs (icons.write_png), because QSS can only load images from files.
     """
     t = dict(TOKENS[mode])
-    t.update(rc=RADIUS_CONTROL, rk=RADIUS_CARD, small=SMALL_PT, body=BODY_PT,
+    t.update(rc=RADIUS_CONTROL, rk=RADIUS_CARD, small=SMALL_PT, body=BODY_PT, title=TITLE_PT,
+             display=DISPLAY_PT, tabh=TAB_BAR_H - 2,
              chev_down=icons.write_png("chevron_down", 12, t["muted"]),
              chev_up=icons.write_png("chevron_up", 12, t["muted"]),
              close_icon=icons.write_png("close", 12, t["muted"]))
@@ -603,7 +629,7 @@ def apply_theme(app, mode=None, save=True):
     """
     global _mode
     mode = mode if mode in MODES else saved_mode()
-    _mode = mode
+    old, _mode = _mode, mode
     if app.style().objectName().lower() != "fusion":
         app.setStyle("Fusion")
     font = QFont(pick_font_family())
@@ -611,12 +637,44 @@ def apply_theme(app, mode=None, save=True):
     app.setFont(font)
     app.setPalette(build_palette(mode))
     app.setStyleSheet(build_stylesheet(mode))
+    if old != mode:
+        retint_widget_styles(app, old, mode)
     for widget in app.topLevelWidgets():
         if widget.property("wbDecorated"):
             decorate_widgets(widget)
     if save:
         QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(THEME_KEY, mode)
     notifier.changed.emit(mode)
+
+
+# Text-colour tokens that owners' widgets may write into their own style sheet.
+TEXT_TOKENS = ("text", "text_soft", "muted", "primary_text", "success_text", "warning_text",
+               "danger_text", "disabled_text")
+_COLOR_DECL = re.compile(r"(?<![-\w])(color\s*:\s*)(#[0-9a-fA-F]{6})\b")
+
+
+def retint_widget_styles(app, old, new):
+    """Swap theme text colours inside widgets' OWN style sheets from mode old to mode new.
+
+    A widget's own style sheet beats the application one, so a label that
+    was given "color: <muted>" when it was built (for example the command
+    bar's hint line in P2's shortcuts.py) would keep the old mode's colour
+    after a switch and fail the 4.5:1 contrast. Only `color:` declarations
+    whose value is one of TEXT_TOKENS of the old mode are changed; backgrounds
+    (colour swatches, sticky colours) and user colours are left alone.
+    """
+    swap = {TOKENS[old][k].lower(): TOKENS[new][k] for k in TEXT_TOKENS}
+
+    def fix(match):
+        """Replace one color value if it is an old-mode text token."""
+        return match.group(1) + swap.get(match.group(2).lower(), match.group(2))
+
+    for widget in app.allWidgets():
+        sheet = widget.styleSheet()
+        if sheet and "color" in sheet:
+            new_sheet = _COLOR_DECL.sub(fix, sheet)
+            if new_sheet != sheet:
+                widget.setStyleSheet(new_sheet)
 
 
 def toggle_theme(app=None):
@@ -676,10 +734,15 @@ def _safely(fn, *args):
 
 
 def _decorate_tool_buttons(root, by_label, tips):
-    """Tool rail buttons (found by their label): icon, tooltip with shortcut, objectName."""
+    """Tool rail buttons (found by their label): icon, tooltip with shortcut, objectName.
+
+    The buttons of main_window's text tool bar (toolbar_tools) are skipped: shell.py
+    hides that bar for good and only keeps its actions for the shortcuts.
+    """
+    hidden_bar = root.findChild(QToolBar, "toolbar_tools")
     for btn in root.findChildren(QToolButton):
         tool_id = by_label.get(btn.text())
-        if tool_id is None:
+        if tool_id is None or (hidden_bar is not None and hidden_bar.isAncestorOf(btn)):
             continue
         btn.setIcon(_state_icon(TOOL_ICONS.get(tool_id, tool_id)))
         btn.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
@@ -690,21 +753,6 @@ def _decorate_tool_buttons(root, by_label, tips):
         if not btn.toolTip():
             btn.setToolTip(tips[tool_id])
         _set_name(btn, "toolButton")
-
-
-def _decorate_toolbar(root, by_label, tips):
-    """The window's text toolbar of tools: icon per action and 'Label (Key)' tooltips."""
-    bar = root.findChild(QToolBar, "toolbar_tools")
-    if bar is None:
-        return
-    bar.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
-    bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-    for action in bar.actions():
-        tool_id = by_label.get(action.text())
-        if tool_id is None:
-            continue
-        action.setIcon(_state_icon(TOOL_ICONS.get(tool_id, tool_id)))
-        action.setToolTip(tips[tool_id])
 
 
 def _decorate_small_buttons(root):
@@ -718,8 +766,10 @@ def _decorate_small_buttons(root):
             _set_name(btn, "formatToggle")
             icon = FORMAT_TOGGLES[btn.text()]
             if icon:
-                btn.setIcon(_state_icon(icon, 16))
-                btn.setIconSize(QSize(16, 16))
+                # ICON_TEXT, not ICON_SIZE: P2 fixes these buttons at 26 x 24 px, and the
+                # alignment icons match the B / I / U letters next to them.
+                btn.setIcon(_state_icon(icon, ICON_TEXT))
+                btn.setIconSize(QSize(ICON_TEXT, ICON_TEXT))
                 btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
 
@@ -738,8 +788,10 @@ def _decorate_push_buttons(root):
         if entry is None:
             continue
         name, danger = entry
-        btn.setIcon(_state_icon(name, 16))
-        btn.setIconSize(QSize(16, 16))
+        # Icon-only buttons (History's restore, rename, ...) get the full icon size.
+        size = ICON_TEXT if btn.text() else ICON_SIZE
+        btn.setIcon(_state_icon(name, size))
+        btn.setIconSize(QSize(size, size))
         if danger and not btn.property("danger"):
             btn.setProperty("danger", True)
             repolish(btn)
@@ -762,7 +814,7 @@ def _decorate_menus(root):
             else:
                 name = MENU_ICONS.get(text)
             if name:
-                action.setIcon(icons.get_icon(name, 16, t["text_soft"]))
+                action.setIcon(icons.get_icon(name, ICON_TEXT, t["text_soft"]))
 
 
 def _decorate_docks(root):
@@ -771,7 +823,7 @@ def _decorate_docks(root):
     for dock in root.findChildren(QDockWidget):
         name = DOCK_ICONS.get(dock.objectName())
         if name:
-            dock.setWindowIcon(icons.get_icon(name, 16, t["text_soft"]))
+            dock.setWindowIcon(icons.get_icon(name, ICON_TEXT, t["text_soft"]))
 
 
 def decorate_widgets(root):
@@ -785,7 +837,6 @@ def decorate_widgets(root):
     """
     by_label, tips = _tool_tables()
     _safely(_decorate_tool_buttons, root, by_label, tips)
-    _safely(_decorate_toolbar, root, by_label, tips)
     _safely(_decorate_small_buttons, root)
     _safely(_decorate_push_buttons, root)
     _safely(_decorate_menus, root)

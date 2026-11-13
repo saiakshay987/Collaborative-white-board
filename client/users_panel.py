@@ -124,7 +124,7 @@ class UserRowDelegate(QStyledItemDelegate):
 
         base = QFont(option.font)
         small = QFont(base)
-        small.setPointSizeF(max(7.0, base.pointSizeF() - 1.5))
+        small.setPointSizeF(theme.SMALL_PT)          # the theme's one small size (pills, 'offline')
         small.setWeight(QFont.DemiBold)
 
         # Avatar: a circle in the user's colour with the initials.

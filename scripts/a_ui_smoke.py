@@ -12,6 +12,9 @@ built as the join screen. Screenshots go to scripts/a_ui_shots/ (git-ignored):
     main_viewer_<mode>_1366x768.png     the same as a viewer (banner, greyed tools)
     connect_<mode>[_s15].png            join screen with a notice and a room list
     ready_<mode>[_s15].png              host's "room ready" page
+    menu_file_<mode>.png, menu_view_<mode>.png, tooltip_<mode>.png,
+    command_bar_<mode>_1366x768.png, roles_<mode>.png, shortcuts_help_<mode>.png
+                                        (scale 1.0 only, for review)
 
 The script runs itself twice in child processes: at scale 1.0 and with
 QT_SCALE_FACTOR=1.5 (HiDPI, files end in _s15). Every child uses
@@ -27,7 +30,18 @@ Checks (exit code 1 if one fails):
     Users sits directly above Chat,
   * the dock layout is saved and restored, and a corrupt saved layout falls
     back to the default one (and is deleted),
-  * switching the theme stays fast (it is only done from the menu).
+  * switching the theme stays fast (it is only done from the menu),
+  * contrast: every text/background token pair of both themes is 4.5:1 or more,
+  * shortcuts: all of them are listed, none is bound twice; every tool button's
+    tooltip names its key,
+  * icon sizes: icon-only buttons theme.ICON_SIZE (20), icons next to text
+    theme.ICON_TEXT (16),
+  * keyboard: Tab in the main window goes top bar, tools, canvas, bottom, right,
+    status; Tab in the connect dialog reaches every field (no trap) and the
+    arrows switch Host / Join,
+  * dark mode: no light boxes (except the white page, the pen preview and colour
+    swatches) in the main window (host and viewer), connect dialog, menus,
+    command bar, Manage roles and the shortcuts help.
 """
 
 import os
@@ -84,6 +98,7 @@ def child(suffix):
     from PyQt5.QtWidgets import QApplication, QDockWidget, QScrollArea, QStackedWidget, QToolBar
 
     import run_client
+    from common import config
     from client import registry, shell, theme
     from client.app_state import AppState
     from client.board_model import BoardModel
@@ -311,7 +326,7 @@ def child(suffix):
         dlg._room_timer.stop()                 # the fake list below must stay on screen
         dlg.show()
         QTest.qWait(300)
-        dlg._show_rooms("127.0.0.1", ROOMS, "")
+        dlg._show_rooms("127.0.0.1:%d" % config.PORT, ROOMS, "")
         shoot(dlg, "connect_%s" % mode)
         dlg.code_label.setText("K7QX2M")
         dlg.ip_label.setText("192.168.43.57")
@@ -321,10 +336,293 @@ def child(suffix):
         shoot(dlg, "ready_%s" % mode)
         dlg.done(0)
 
+    window.show()
+    phase5_checks(qapp, app, window, check, shoot, suffix)
+
     for failure in failures:
         print("  FAIL:", failure)
     qapp.processEvents()
     return 1 if failures else 0
+
+
+# --- phase 5: contrast, keyboard, icon sizes, dark-mode surfaces --------------------
+
+# Text token on background token: every pair the style sheet uses for readable text.
+TEXT_PAIRS = ([("text", b) for b in ("bg", "surface", "surface_alt", "hover", "pressed", "input_bg",
+                                     "primary_soft")]
+              + [("text_soft", b) for b in ("bg", "surface", "surface_alt", "hover")]
+              + [("muted", b) for b in ("bg", "surface", "surface_alt", "input_bg", "hover")]
+              + [("primary_text", "primary_soft"), ("primary_text", "surface"),
+                 ("primary_text", "surface_alt"), ("on_primary", "primary"),
+                 ("on_primary", "primary_hover"), ("success_text", "success_soft"),
+                 ("warning_text", "warning_soft"), ("danger_text", "danger_soft"),
+                 ("success_text", "surface"), ("warning_text", "surface"), ("danger_text", "surface"),
+                 ("tooltip_text", "tooltip_bg")])
+
+# Widgets that may stay light in dark mode: the white page and small pieces of it
+# (the pen preview), and colour swatches (their fill is the colour itself).
+LIGHT_ALLOWED = {"CanvasWidget", "WidthPreview", "swatch", "inkSwatch", "currentSwatch"}
+
+
+def _short(widget):
+    """'Class[objectName|text]' for messages."""
+    text = ""
+    for getter in ("text", "placeholderText", "toolTip"):
+        text = text or (getattr(widget, getter, lambda: "")() or "")
+    return "%s[%s|%s]" % (widget.metaObject().className(), widget.objectName(), text[:24])
+
+
+def tab_walk(start, steps):
+    """Press Tab `steps` times from start; return the widgets that got the focus, in order."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import QApplication
+    start.setFocus()
+    QTest.qWait(10)
+    seen = []
+    for _ in range(steps):
+        widget = QApplication.focusWidget()
+        if widget is None:
+            break
+        seen.append(widget)
+        QTest.keyClick(widget, Qt.Key_Tab)
+        QTest.qWait(2)
+    return seen
+
+
+def light_boxes(root):
+    """Visible widgets of root that are mostly light pixels (lightness > 200) on screen."""
+    from PyQt5.QtWidgets import QWidget
+    image = root.grab().toImage()
+    ratio = image.devicePixelRatio()       # 1.5 in the QT_SCALE_FACTOR run: pixels, not points
+    found = []
+    for w in root.findChildren(QWidget):
+        if not w.isVisible() or w.width() < 12 or w.height() < 12:
+            continue
+        if w.metaObject().className() in LIGHT_ALLOWED or w.objectName() in LIGHT_ALLOWED:
+            continue
+        if any(a.metaObject().className() in LIGHT_ALLOWED for a in _ancestors(w, root)):
+            continue
+        top_left = w.mapTo(root, w.rect().topLeft())
+        total = light = 0
+        for y in range(top_left.y() + 2, top_left.y() + w.height() - 2, max(1, w.height() // 10)):
+            for x in range(top_left.x() + 2, top_left.x() + w.width() - 2, max(1, w.width() // 10)):
+                px, py = int(x * ratio), int(y * ratio)
+                if 0 <= px < image.width() and 0 <= py < image.height():
+                    total += 1
+                    light += image.pixelColor(px, py).lightness() > 200
+        if total and light > 0.6 * total:
+            found.append(_short(w))
+    if found:          # keep what was scanned, to see what looked light
+        image.save(os.path.join(SHOTS, "lightbox_%s.png" % root.metaObject().className()))
+    return found
+
+
+def _ancestors(widget, root):
+    """The parents of widget up to (not including) root."""
+    out, w = [], widget.parentWidget()
+    while w is not None and w is not root:
+        out.append(w)
+        w = w.parentWidget()
+    return out
+
+
+def phase5_checks(qapp, app, window, check, shoot, suffix):
+    """Contrast of the theme tokens, shortcuts, tooltips, icon sizes, Tab order, dark surfaces."""
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import (QAbstractButton, QAction, QApplication, QDockWidget, QMenu,
+                                 QShortcut, QTabBar, QToolBar, QToolButton, QToolTip)
+    from common import config
+    from client import connect_dialog, main_window, registry, shell, shortcuts, theme
+
+    # 1. contrast: computed from the tokens, both modes.
+    worst = []
+    for mode in theme.MODES:
+        t = theme.TOKENS[mode]
+        for fg, bg in TEXT_PAIRS:
+            ratio = theme.contrast_ratio(t[fg], t[bg])
+            check(ratio >= 4.5, "%s: %s on %s is %.2f:1 (needs 4.5)" % (mode, fg, bg, ratio))
+            worst.append((ratio, mode, fg, bg))
+    ratio, mode, fg, bg = min(worst)
+    print("  contrast: %d text pairs x 2 modes >= 4.5:1 (lowest %.2f, %s %s on %s)"
+          % (len(TEXT_PAIRS), ratio, mode, fg, bg))
+
+    # 2. shortcuts: list them all, no key bound twice.
+    keys = {}
+    for action in window.findChildren(QAction):
+        for seq in action.shortcuts():
+            if not seq.isEmpty():
+                keys.setdefault(seq.toString(), []).append(action.text())
+    for sc in window.findChildren(QShortcut):
+        keys.setdefault(sc.key().toString(), []).append("shortcut")
+    for key, users in sorted(keys.items()):
+        check(len(users) == 1, "key %s is bound %d times: %s" % (key, len(users), users))
+    print("  shortcuts (%d, no duplicates): %s" % (len(keys), " ".join(sorted(keys))))
+    for key in ("PgUp", "PgDown"):
+        print("  %s is %s" % (key, "free" if key not in keys else "taken by %s" % keys[key]))
+
+    # 3. every tool button names its shortcut.
+    tips = 0
+    for btn in window.findChildren(QAbstractButton):
+        tool_id = btn.property("toolId")
+        if tool_id is None and btn.property("railCompact"):
+            tool_id = next((t for t, c in registry.TOOLS.items()
+                            if btn.toolTip().startswith(getattr(c, "label", t))), None)
+        cls = registry.TOOLS.get(tool_id)
+        if cls is not None and getattr(cls, "shortcut", None):
+            tips += 1
+            check("(%s)" % cls.shortcut in btn.toolTip(),
+                  "tooltip %r has no shortcut %s" % (btn.toolTip(), cls.shortcut))
+    print("  tool tooltips with their key: %d buttons" % tips)
+
+    # 4. icon sizes: icon-only buttons theme.ICON_SIZE, icons next to text theme.ICON_TEXT.
+    sizes = {}
+    for btn in window.findChildren(QAbstractButton):
+        if (btn.icon().isNull() or btn.objectName().startswith("qt_")
+                or isinstance(btn.parentWidget(), QToolBar) and btn.parentWidget().isHidden()):
+            continue                             # Qt's own buttons, the hidden text tool bar
+        icon_only = (not btn.text() or bool(btn.property("railCompact"))
+                     or (isinstance(btn, QToolButton)
+                         and btn.toolButtonStyle() == Qt.ToolButtonIconOnly))
+        if btn.objectName() == "formatToggle":
+            want = theme.ICON_TEXT                   # fixed 26 x 24 by P2, matches B / I / U
+        else:
+            want = theme.ICON_SIZE if icon_only else theme.ICON_TEXT
+        got = btn.iconSize().width()
+        sizes[got] = sizes.get(got, 0) + 1
+        check(got == want, "%s icon is %d px, expected %d" % (_short(btn), got, want))
+    print("  icon sizes: %s" % ", ".join("%d px x %d" % kv for kv in sorted(sizes.items())))
+
+    # 5. Tab order: main window and connect dialog, no trap.
+    window.activateWindow()
+    QApplication.setActiveWindow(window)
+    QTest.qWait(50)
+    bar = window.findChild(shell.TopBar)
+    walk = tab_walk(bar.copy_btn, 120)
+    names = [_short(w) for w in walk]
+    order = []
+    for w in walk:
+        region = ("top bar" if bar.isAncestorOf(w) else "canvas" if w is app.canvas
+                  else "bottom tabs" if isinstance(w, QTabBar) and w.parentWidget() is window
+                  else None)
+        if region is None:
+            for dock in ("dock_tools", "dock_history", "dock_stats", "dock_users", "dock_chat"):
+                d = window.findChild(QDockWidget, dock)
+                if d is not None and d.isAncestorOf(w):
+                    region = dock[5:]
+                    break
+        region = region or ("status" if window.statusBar().isAncestorOf(w) else "?")
+        if not order or order[-1] != region:
+            order.append(region)
+    print("  main window Tab order: %s" % " > ".join(order[:12]))
+    check(order[:3] == ["top bar", "tools", "canvas"], "Tab order starts %s" % order[:3])
+    check("?" not in order, "Tab reaches widgets outside the panels: %s" % names)
+    check(len(walk) == 120 or walk[-1] is not None, "Tab lost the focus")
+    for mode in ("light", "dark"):
+        theme.apply_theme(qapp, mode, save=False)
+        dlg = connect_dialog.ConnectDialog(app)
+        dlg._room_timer.stop()
+        dlg.show()
+        dlg.activateWindow()
+        QApplication.setActiveWindow(dlg)
+        QTest.qWait(150)
+        if mode == "light":
+            check(QApplication.focusWidget() is dlg.host_name,
+                  "connect dialog does not start in the name field (%s)"
+                  % _short(QApplication.focusWidget()) if QApplication.focusWidget() else None)
+            for page, fields in ((0, [dlg.host_name, dlg.host_pw]),
+                                 (1, [dlg.join_ip, dlg.join_code, dlg.join_name, dlg.join_pw])):
+                dlg.tabs.setCurrentIndex(page)
+                QTest.qWait(30)
+                walk = tab_walk(dlg._segments.button(page), 14)
+                check(len(set(map(id, walk))) > 3, "Tab is stuck in the connect dialog: %s"
+                      % [_short(w) for w in walk])
+                missing = [_short(f) for f in fields + [dlg.go_btn] if f not in walk]
+                check(not missing, "Tab never reaches %s on page %d" % (missing, page))
+                print("  connect dialog Tab order (%s): %s" % (("Host", "Join")[page],
+                      " > ".join(_short(w) for w in walk[:len(set(map(id, walk)))])))
+            QTest.keyClick(dlg._segments.button(0), Qt.Key_Right)
+            check(dlg.tabs.currentIndex() == 1, "Right arrow on the switch did not open Join")
+            QTest.keyClick(dlg._segments.button(1), Qt.Key_Left)
+            check(dlg.tabs.currentIndex() == 0, "Left arrow on the switch did not open Host")
+        dlg.tabs.setCurrentIndex(1)
+        dlg._show_rooms("127.0.0.1:%d" % config.PORT,
+                        ROOMS, "")
+        dlg.join_ip.setText("127.0.0.1")
+        dlg._show_rooms("127.0.0.1:%d" % config.PORT,
+                        ROOMS, "")
+        QTest.qWait(50)
+        if mode == "dark":
+            bad = light_boxes(dlg)
+            check(not bad, "light boxes in the dark connect dialog: %s" % bad)
+        dlg.done(0)
+
+    # 6. dark mode: no light boxes; menus, tooltip, command bar and dialogs for review.
+    for mode in ("light", "dark"):
+        theme.apply_theme(qapp, mode, save=False)
+        window.resize(*SMALL)
+        QTest.qWait(200)
+        if mode == "dark":
+            for role in ("host", "viewer"):
+                app.set_role(role)
+                QTest.qWait(700)                 # the role toast fades in over the page first
+                bad = light_boxes(window)
+                check(not bad, "light boxes in the dark main window (%s): %s" % (role, bad))
+            app.set_role("host")
+        if suffix:
+            continue                             # the extra screenshots only at scale 1.0
+        menus = {m.title(): m for m in window.menuBar().findChildren(QMenu) if m.title()}
+        for title in ("File", "View"):
+            menu = menus.get(title)
+            if menu is not None:
+                menu.popup(window.mapToGlobal(QPoint(20, 30)))
+                QTest.qWait(150)
+                if mode == "dark":
+                    bad = light_boxes(menu)
+                    check(not bad, "light boxes in the dark %s menu: %s" % (title, bad))
+                shoot(menu, "menu_%s_%s" % (title.lower(), mode))
+                menu.hide()
+        bar = window.findChild(shell.TopBar)
+        QToolTip.showText(bar.undo_btn.mapToGlobal(QPoint(10, 30)), bar.undo_btn.toolTip(), bar.undo_btn)
+        QTest.qWait(200)
+        tip = next((w for w in QApplication.topLevelWidgets()
+                    if w.metaObject().className() == "QTipLabel" and w.isVisible()), None)
+        if tip is not None:
+            shoot(tip, "tooltip_%s" % mode)
+        QToolTip.hideText()
+        shortcuts.open_command_bar(app)
+        QTest.qWait(100)
+        command_bar = window.findChild(shortcuts.CommandBar)
+        if command_bar is not None:
+            command_bar._edit.setText("re")
+            if mode == "dark":
+                bad = light_boxes(command_bar)
+                check(not bad, "light boxes in the dark command bar: %s" % bad)
+            shoot(window, "command_bar_%s_%dx%d" % (mode, SMALL[0], SMALL[1]))
+            command_bar._edit.clear()
+            command_bar.hide()
+        main_window.open_manage_roles(app)
+        QTest.qWait(150)
+        roles = main_window._dialog
+        if roles is not None:
+            if mode == "dark":
+                bad = light_boxes(roles)
+                check(not bad, "light boxes in the dark Manage roles dialog: %s" % bad)
+            shoot(roles, "roles_%s" % mode)
+            roles.close()
+        shortcuts.show_shortcuts_help(app)
+        QTest.qWait(150)
+        helper = shortcuts._help_dialog
+        if helper is not None:
+            if mode == "dark":
+                bad = light_boxes(helper)
+                check(not bad, "light boxes in the dark shortcuts help: %s" % bad)
+            shoot(helper, "shortcuts_help_%s" % mode)
+            helper.close()
+    theme.apply_theme(qapp, "light", save=False)
+    print("  dark mode: main window (host, viewer), connect dialog, menus, command bar, "
+          "dialogs: checked for light boxes")
 
 
 if __name__ == "__main__":

@@ -47,29 +47,23 @@ HISTORY = 60
 # RTT color thresholds (ms): below GREEN_MS green, below AMBER_MS amber, else red.
 GREEN_MS = 20
 AMBER_MS = 100
-# Fixed colours of earlier versions; rtt_color() now takes them from the theme.
-GREEN = QColor("#2e7d32")
-AMBER = QColor("#e69500")
-RED = QColor("#c62828")
-GREY = QColor("#9e9e9e")
-
-# Series color for messages per second (fixed fallback; the graph uses the theme's primary).
-MSG_COLOR = QColor("#4363d8")
-
 KB = 1024.0
+
+
+def rtt_tone(ms):
+    """Return the tone of an RTT in ms: 'success' (fast), 'warning', 'danger' (slow) or 'muted' (unknown)."""
+    if ms is None:
+        return "muted"
+    if ms < GREEN_MS:
+        return "success"
+    return "warning" if ms < AMBER_MS else "danger"
 
 
 def rtt_color(ms):
     """Return the QColor for an RTT in ms: the theme's success / warning / danger text colour
     (readable on panels in light and dark), muted grey when unknown."""
-    t = theme.tokens()
-    if ms is None:
-        return QColor(t["muted"])
-    if ms < GREEN_MS:
-        return QColor(t["success_text"])
-    if ms < AMBER_MS:
-        return QColor(t["warning_text"])
-    return QColor(t["danger_text"])
+    tone = rtt_tone(ms)
+    return QColor(theme.tokens()["muted" if tone == "muted" else tone + "_text"])
 
 
 def fmt_rtt(ms):
@@ -162,7 +156,7 @@ class LiveGraph(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(t["surface"]))
         font = QFont(self.font())
-        font.setPointSizeF(max(7.0, font.pointSizeF() - 1))
+        font.setPointSizeF(theme.SMALL_PT)
         p.setFont(font)
         plot = QRectF(self.rect()).adjusted(6, 16, -6, -14)
 
@@ -374,7 +368,11 @@ class StatsPanel(QWidget):
         """Update my RTT and the colored per-user RTT list from model."""
         mine = self.my_rtt_ms()
         self.my_rtt.setText(fmt_rtt(mine))
-        self.my_rtt.setStyleSheet("color: %s;" % rtt_color(mine).name())
+        # Coloured by the theme's QLabel[toneText=...] rule, so it follows light/dark by itself.
+        tone = rtt_tone(mine)
+        if self.my_rtt.property("toneText") != tone:
+            self.my_rtt.setProperty("toneText", tone)
+            theme.repolish(self.my_rtt)
         rows = []
         for u in self.app.users:
             if not u.get("online"):

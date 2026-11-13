@@ -30,6 +30,10 @@ What install() does
     * Remembers the dock layout (QMainWindow.saveState) in QSettings and
       falls back to the default layout when the saved one cannot be restored.
       View > Reset layout restores the default at any time.
+    * Keyboard: Tab walks top bar, tool rail, canvas, History/Latency, Users,
+      Chat and the status chip (each panel keeps its own inner order); the
+      window opens with the focus on the canvas. Docks are locked, so their
+      greyed-out View-menu toggles are hidden (Ctrl+1/2/3 replace them).
 
 Everything runs on the GUI thread; the widgets here follow AppState and
 NetClient signals and never touch a socket.
@@ -38,7 +42,8 @@ NetClient signals and never touch a socket.
 from PyQt5.QtCore import QByteArray, QEvent, QObject, QSettings, QSize, Qt, QTimer
 from PyQt5.QtWidgets import (QApplication, QButtonGroup, QDockWidget, QFrame, QGridLayout,
                              QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
-                             QStackedWidget, QTabWidget, QToolBar, QToolButton, QVBoxLayout,
+                             QStackedWidget, QTabBar, QTabWidget, QToolBar, QToolButton,
+                             QVBoxLayout,
                              QWidget)
 
 from client import chat_panel, icons, registry, shortcuts, stats_panel, theme, users_panel
@@ -256,7 +261,7 @@ class StatsChip(QToolButton):
         self.window = window
         self.setObjectName("statsChip")
         self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.setIconSize(QSize(14, 14))
+        self.setIconSize(QSize(theme.ICON_TEXT, theme.ICON_TEXT))
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("My round-trip time and traffic. Click to open Latency and traffic.")
         self.clicked.connect(self.open_stats)
@@ -284,7 +289,7 @@ class StatsChip(QToolButton):
         if self.property("pill") != kind:
             self.setProperty("pill", kind)
             theme.repolish(self)
-        self.setIcon(icons.get_icon("activity", 14, theme.tokens()[
+        self.setIcon(icons.get_icon("activity", theme.ICON_TEXT, theme.tokens()[
             "%s_text" % kind if kind != "neutral" else "text_soft"]))
 
     def open_stats(self):
@@ -522,12 +527,12 @@ def _add_send_button(window):
     btn.setObjectName("sendButton")
     btn.setToolTip("Send (Enter)")
     btn.setFixedSize(36, 36)
-    btn.setIconSize(QSize(18, 18))
+    btn.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
     btn.setCursor(Qt.PointingHandCursor)
 
     def paint_icon(_mode=None):
         """The send icon in the colour that reads on the primary button."""
-        btn.setIcon(icons.get_icon("send", 18, theme.tokens()["on_primary"]))
+        btn.setIcon(icons.get_icon("send", theme.ICON_SIZE, theme.tokens()["on_primary"]))
 
     def send():
         """Send like Enter does, then give the input the focus back."""
@@ -557,6 +562,7 @@ def _wrap_in_scroll(dock):
         return
     scroll = QScrollArea()
     scroll.setObjectName("dockScroll")
+    scroll.setFocusPolicy(Qt.NoFocus)        # Tab goes to the panel's controls, not the frame
     scroll.setFrameShape(QFrame.NoFrame)
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -732,9 +738,10 @@ def _restyle_banner(window):
 
 # --- panel headers, folding and collapsible areas (phase 4B) -----------------------
 
-HEADER_H = 36             # height of every dock header (and of the bottom tab bar)
+HEADER_H = theme.TAB_BAR_H  # height of every dock header (and of the bottom tab bar)
 RAIL_W = 54               # width of the collapsed tool rail (icons only)
 PANEL_MARGIN = 8          # inner margin of every panel
+PANEL_SPACING = 8         # gap between the rows of every panel
 QWIDGETSIZE_MAX = 16777215
 RAIL_KEY = "window/rail_collapsed"
 FOLD_KEY = "window/folded_docks"
@@ -767,7 +774,7 @@ class DockHeader(QWidget):
         self.button = QToolButton()
         self.button.setObjectName("dockCollapse")
         self.button.setAutoRaise(True)
-        self.button.setIconSize(QSize(16, 16))
+        self.button.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
         self.button.clicked.connect(on_collapse)
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 0, 6, 0)
@@ -791,9 +798,9 @@ class DockHeader(QWidget):
     def repaint_icons(self, _mode=None):
         """Paint the icon and the chevron in the active theme's colours."""
         t = theme.tokens()
-        self.icon.setPixmap(icons.pixmap(self.icon_name, 16, t["text_soft"]))
+        self.icon.setPixmap(icons.pixmap(self.icon_name, theme.ICON_TEXT, t["text_soft"]))
         self.button.setIcon(icons.get_icon(self.chevrons[1] if self.collapsed else self.chevrons[0],
-                                           16, t["text_soft"]))
+                                           theme.ICON_SIZE, t["text_soft"]))
 
 
 class CompactRail(QWidget):
@@ -948,6 +955,9 @@ def _install_headers(window):
             continue
         # No moving, floating or closing: the layout stays tidy and nothing gets lost.
         dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        # Its View-menu toggle is then always greyed out; Ctrl+1/2/3 and the top-bar
+        # buttons show and hide the areas instead, so the dead entry is hidden.
+        dock.toggleViewAction().setVisible(False)
         if name not in HEADER_DOCKS:
             continue
         icon_name, folds = HEADER_DOCKS[name]
@@ -961,7 +971,7 @@ def _install_headers(window):
 
 
 def _even_margins(window):
-    """The same inner margin in every panel (the panels' own layouts, spacing untouched)."""
+    """The same inner margin and row gap in every panel (only the panel's top-level layout)."""
     for name in DOCK_NAMES:
         dock = _dock(window, name)
         panel = dock.widget() if dock is not None else None
@@ -972,6 +982,7 @@ def _even_margins(window):
         layout = panel.layout() if panel is not None else None
         if layout is not None:
             layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
+            layout.setSpacing(PANEL_SPACING)
 
 
 def _area_shown(window, names):
@@ -1015,7 +1026,10 @@ def toggle_bottom(app):
 
 def _sync_area_buttons(window):
     """Check the top-bar toggles of the areas that are shown / expanded."""
-    bar = window.findChild(TopBar)
+    try:
+        bar = window.findChild(TopBar)
+    except RuntimeError:
+        return      # the window is being destroyed (its docks still report hiding)
     if bar is None:
         return
     states = {bar.rail_btn: not rail_collapsed(window),
@@ -1053,6 +1067,48 @@ registry.register_menu_action("View", "Show or hide the bottom panel", toggle_bo
                               shortcut="Ctrl+3")
 
 
+# --- keyboard order ---------------------------------------------------------------------
+
+def _focus_chain(window):
+    """Every widget of window in Qt's current focus chain (creation order), window excluded."""
+    chain, widget = [], window.nextInFocusChain()
+    while widget is not None and widget is not window and len(chain) < 5000:
+        chain.append(widget)
+        widget = widget.nextInFocusChain()
+    return chain
+
+
+def _set_tab_order(window, app):
+    """Tab walks the window like it is read: top bar, tool rail, canvas, bottom, right, status.
+
+    Within each region the owner's own order is kept (Qt's focus chain is
+    filtered, not rebuilt); a dock's header button comes before its content.
+    Hidden widgets stay in the chain: Qt skips them while they are hidden.
+    """
+    regions = [window.findChild(TopBar)]
+    regions.append(_dock(window, "dock_tools"))
+    regions.append(getattr(app, "canvas", None))
+    # The History / Latency tabs: Qt's tab bar of the bottom dock area, a child of the window.
+    regions += [bar for bar in window.findChildren(QTabBar, options=Qt.FindDirectChildrenOnly)]
+    regions += [_dock(window, n) for n in ("dock_history", "dock_stats", "dock_users", "dock_chat")]
+    regions.append(window.statusBar())
+    chain = [w for w in _focus_chain(window) if w.focusPolicy() & Qt.TabFocus]
+    order = []
+    for region in regions:
+        if region is None:
+            continue
+        inside = [w for w in chain if w is region or region.isAncestorOf(w)]
+        header = region.titleBarWidget() if isinstance(region, QDockWidget) else None
+        if header is not None:
+            inside.sort(key=lambda w: 0 if header.isAncestorOf(w) else 1)   # stable sort
+        order += [w for w in inside if w not in order]
+    for first, second in zip(order, order[1:]):
+        QWidget.setTabOrder(first, second)
+    canvas = getattr(app, "canvas", None)
+    if canvas is not None:
+        canvas.setFocus()       # the window opens ready to draw, not on the first top-bar button
+
+
 # --- entry point ------------------------------------------------------------------------
 
 def install(app, window):
@@ -1085,6 +1141,7 @@ def install(app, window):
     _safely(_follow_users_rows, window)
     _safely(_follow_dock_visibility, window)
     _safely(_sync_area_buttons, window)
+    _safely(_set_tab_order, window, app)
     theme.decorate_widgets(window)            # icons for the widgets added above
     qapp = QApplication.instance()
     if qapp is not None:
