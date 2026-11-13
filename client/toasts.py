@@ -211,6 +211,10 @@ class ToastManager(QObject):
         self.window = window
         self.toasts = []            # oldest first; the last one is at the bottom
         window.installEventFilter(self)
+        # The canvas also changes size when panels are hidden or collapsed.
+        central = window.centralWidget() if hasattr(window, "centralWidget") else None
+        if central is not None:
+            central.installEventFilter(self)
 
     def show(self, text):
         """Add a toast with text; push out the oldest if MAX_TOASTS are showing."""
@@ -259,8 +263,8 @@ class ToastManager(QObject):
             toast.raise_()
 
     def eventFilter(self, obj, event):
-        """Re-stack the toasts when the window is resized; never swallow the event."""
-        if obj is self.window and event.type() == QEvent.Resize:
+        """Re-stack the toasts when the window or the canvas is resized; never swallow the event."""
+        if event.type() == QEvent.Resize and self.toasts:
             self.layout()
         return False
 

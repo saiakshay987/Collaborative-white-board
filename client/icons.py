@@ -408,7 +408,58 @@ def _save(p):
     p.drawPath(_poly([(4, 15), (4, 19), (5, 20), (19, 20), (20, 19), (20, 15)], close=False))
 
 
+def _panel(p, side):
+    """A window frame with one side filled (left / right / bottom panel toggles)."""
+    frame = QRectF(3, 4, 18, 16)
+    p.drawRoundedRect(frame, 2.5, 2.5)
+    p.save()
+    p.setBrush(p.pen().color())
+    p.setPen(Qt.NoPen)
+    if side == "left":
+        p.drawRoundedRect(QRectF(4.5, 5.5, 5, 13), 1, 1)
+    elif side == "right":
+        p.drawRoundedRect(QRectF(14.5, 5.5, 5, 13), 1, 1)
+    else:
+        p.drawRoundedRect(QRectF(4.5, 14, 15, 4.5), 1, 1)
+    p.restore()
+
+
+def _panel_left(p):
+    """Left panel toggle."""
+    _panel(p, "left")
+
+
+def _panel_right(p):
+    """Right panel toggle."""
+    _panel(p, "right")
+
+
+def _panel_bottom(p):
+    """Bottom panel toggle."""
+    _panel(p, "bottom")
+
+
+def _chevron_left(p):
+    """Chevron pointing left (collapse to the left)."""
+    p.drawPath(_poly([(14, 7), (9, 12), (14, 17)], close=False))
+
+
+def _chevron_right(p):
+    """Chevron pointing right (expand to the right)."""
+    p.drawPath(_poly([(10, 7), (15, 12), (10, 17)], close=False))
+
+
+def _fit(p):
+    """Fit to content: four corner brackets around a small square."""
+    for path in (((4, 9), (4, 4), (9, 4)), ((15, 4), (20, 4), (20, 9)),
+                 ((20, 15), (20, 20), (15, 20)), ((9, 20), (4, 20), (4, 15))):
+        p.drawPath(_poly(list(path), close=False))
+    p.drawRoundedRect(QRectF(9, 9, 6, 6), 1, 1)
+
+
 _PAINTERS = {
+    "panel_left": _panel_left, "panel_right": _panel_right, "panel_bottom": _panel_bottom,
+    "chevron_left": _chevron_left, "chevron_right": _chevron_right, "fit": _fit,
     "align_left": _align_left, "align_center": _align_center, "align_right": _align_right,
     "save": _save,
     "pen": _pen, "marker": _marker, "highlighter": _highlighter, "eraser": _eraser,

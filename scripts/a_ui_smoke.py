@@ -81,7 +81,7 @@ def child(suffix):
     sys.path.insert(0, ROOT)
     from PyQt5.QtCore import QByteArray, QSettings
     from PyQt5.QtTest import QTest
-    from PyQt5.QtWidgets import QApplication, QDockWidget, QScrollArea, QToolBar
+    from PyQt5.QtWidgets import QApplication, QDockWidget, QScrollArea, QStackedWidget, QToolBar
 
     import run_client
     from client import registry, shell, theme
@@ -163,6 +163,8 @@ def child(suffix):
     for name in ("dock_tools", "dock_stats", "dock_history"):
         dock = window.findChild(QDockWidget, name)
         scroll = dock.widget() if dock is not None else None
+        if isinstance(scroll, QStackedWidget):          # the tool dock: full panel or compact rail
+            scroll = scroll.widget(0)
         if isinstance(scroll, QScrollArea):
             dock.raise_()                      # bring a tabbed dock to the front to measure it
             QTest.qWait(150)
@@ -234,6 +236,59 @@ def child(suffix):
         checked.append("%s=%s" % (key, "ok" if got == tool_id else "FAIL(%s)" % got))
         check(got == tool_id, "shortcut %s gave %s, expected %s" % (key, got, tool_id))
     print("  tool shortcuts:", " ".join(checked))
+
+    # --- panels: locked docks with headers, Ctrl+1/2/3, folding, saved state, reset ----
+    from PyQt5.QtCore import Qt
+    for name in shell.DOCK_NAMES:
+        dock = window.findChild(QDockWidget, name)
+        check(dock.features() == QDockWidget.NoDockWidgetFeatures, "%s can still move/float/close" % name)
+    for name in shell.HEADER_DOCKS:
+        dock = window.findChild(QDockWidget, name)
+        check(isinstance(dock.titleBarWidget(), shell.DockHeader), "%s has no themed header" % name)
+    history_panel_w = window.findChild(QDockWidget, "dock_history")
+    from client.history_panel import HistoryPanel
+    hp = window.findChild(HistoryPanel)
+    check(hp is not None and hp.empty_label.isVisible(), "History does not show its empty text")
+    before = (canvas.width(), canvas.height())
+    for key in (Qt.Key_1, Qt.Key_2, Qt.Key_3):
+        QTest.keyClick(target, key, Qt.ControlModifier)
+        QTest.qWait(150)
+    tools = window.findChild(QDockWidget, "dock_tools")
+    check(shell.rail_collapsed(window) and tools.width() <= shell.RAIL_W + 2,
+          "Ctrl+1 did not collapse the rail (width %d)" % tools.width())
+    check(not shell._area_shown(window, shell.SIDE_DOCKS), "Ctrl+2 did not hide Users and Chat")
+    check(not shell._area_shown(window, shell.BOTTOM_DOCKS), "Ctrl+3 did not hide the bottom panel")
+    after = (canvas.width(), canvas.height())
+    print("  canvas %dx%d -> %dx%d with everything collapsed" % (before + after))
+    check(after[0] > before[0] + 400 and after[1] > before[1] + 150, "canvas did not take the space")
+    bar = window.findChild(shell.TopBar)
+    check(not (bar.rail_btn.isChecked() or bar.side_btn.isChecked() or bar.bottom_btn.isChecked()),
+          "top-bar toggles do not show the collapsed state")
+    for mode in ("light", "dark"):
+        theme.apply_theme(qapp, mode, save=False)
+        shoot(window, "main_collapsed_%s_%dx%d" % (mode, SMALL[0], SMALL[1]))
+    theme.apply_theme(qapp, "light", save=False)
+    shell.save_layout(window)
+    # A fresh start: default arrangement (nothing saved), then what the next launch restores.
+    shell.apply_default_layout(window)
+    shell.set_rail_collapsed(window, False, save=False)
+    QTest.qWait(100)
+    shell.restore_layout(window)                        # the saved, collapsed arrangement
+    shell._restore_collapse_state(window)
+    QTest.qWait(150)
+    check(shell.rail_collapsed(window) and not shell._area_shown(window, shell.SIDE_DOCKS)
+          and not shell._area_shown(window, shell.BOTTOM_DOCKS), "collapsed state was not restored")
+    shell.reset_layout(app)
+    QTest.qWait(200)
+    check(not shell.rail_collapsed(window) and shell._area_shown(window, shell.SIDE_DOCKS)
+          and shell._area_shown(window, shell.BOTTOM_DOCKS), "Reset layout did not restore the default")
+    shell.set_folded(window, "dock_users", True)
+    QTest.qWait(150)
+    users_dock = window.findChild(QDockWidget, "dock_users")
+    check(users_dock.height() <= shell.HEADER_H + 4, "folding Users left it %d px tall" % users_dock.height())
+    shell.set_folded(window, "dock_users", False)
+    QTest.qWait(150)
+    print("  panels: locked, headers, Ctrl+1/2/3, saved state, reset, folding: checked")
 
     # --- saved layout: round trip, then a corrupt one -------------------------------
     settings = QSettings(shell.SETTINGS_ORG, shell.SETTINGS_APP)

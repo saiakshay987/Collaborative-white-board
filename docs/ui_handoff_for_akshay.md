@@ -344,6 +344,61 @@ index 4d4b872..9e5beb6 100644
 
 ---
 
+## Phase 4 (approved for styling)
+
+### Janith (P3): `client/history_panel.py`, part B
+
+The version list fills the whole width again (Name stretches; By, Time and Objects
+fit their contents), and an empty list shows a muted, centred line: "No versions yet.
+Save one to keep a snapshot." The line is a label over the table's viewport that
+ignores the mouse, so right-click and selection on the table work as before; it is
+shown only while the table has no rows. Nothing else changes.
+
+```diff
+diff --git a/client/history_panel.py b/client/history_panel.py
+index 52325d0..ca5fdf3 100644
+--- a/client/history_panel.py
++++ b/client/history_panel.py
+@@ -52,2 +52,3 @@ AUTO_NAME_RESTORE = "before restore "   # the names the server gives to its auto
+ AUTO_NAME_CLEAR = "before clear"
++EMPTY_TEXT = "No versions yet. Save one to keep a snapshot."   # shown while the list is empty
+ 
+@@ -265,9 +266,12 @@ class HistoryPanel(QWidget):
+         header = self.table.horizontalHeader()
+-        header.setSectionResizeMode(0, QHeaderView.Interactive)   # Name: fixed start width, draggable
+-        header.resizeSection(0, 240)
++        header.setSectionResizeMode(0, QHeaderView.Stretch)       # Name fills the width
+         for col in (1, 2, 3):
+             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+-        header.setStretchLastSection(False)
+         self.table.setShowGrid(False)                              # card-style rows: client/theme.py
+         self.table.verticalHeader().setDefaultSectionSize(32)
++        # Shown over the empty list (muted, centred; clicks go through to the table).
++        self.empty_label = QLabel(EMPTY_TEXT, self.table.viewport())
++        self.empty_label.setAlignment(Qt.AlignCenter)
++        self.empty_label.setProperty("muted", True)
++        self.empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+ 
+@@ -360,4 +364,15 @@ class HistoryPanel(QWidget):
+                 self.table.selectRow(row)
++        self.empty_label.setVisible(self.table.rowCount() == 0)
++        self._place_empty_label()
+         self.refresh_buttons()
+ 
++    def _place_empty_label(self):
++        """Stretch the empty-list text over the table's visible area."""
++        self.empty_label.setGeometry(self.table.viewport().rect())
++
++    def resizeEvent(self, event):
++        """Keep the empty-list text centred when the panel (and so the table) is resized."""
++        super().resizeEvent(event)
++        self._place_empty_label()
++
+     def refresh_buttons(self):
+```
+
+---
+
 ## Not changed, for the owners to decide
 
 * `scripts/p4_test_text.py` (P4): two format-bar tests read `SelectTool.selected_id`,

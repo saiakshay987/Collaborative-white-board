@@ -36,8 +36,9 @@ NetClient signals and never touch a socket.
 """
 
 from PyQt5.QtCore import QByteArray, QEvent, QObject, QSettings, QSize, Qt, QTimer
-from PyQt5.QtWidgets import (QApplication, QDockWidget, QFrame, QGridLayout, QGroupBox,
-                             QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QToolBar, QToolButton,
+from PyQt5.QtWidgets import (QApplication, QButtonGroup, QDockWidget, QFrame, QGridLayout,
+                             QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
+                             QStackedWidget, QTabWidget, QToolBar, QToolButton, QVBoxLayout,
                              QWidget)
 
 from client import chat_panel, icons, registry, shortcuts, stats_panel, theme, users_panel
@@ -176,13 +177,26 @@ class TopBar(QToolBar):
         self.chip = ConnectionChip(app.net) if app.net is not None else _pill("No server")
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.rail_btn = _icon_button("panel_left", "Tool rail: collapse or expand (Ctrl+1)",
+                                     lambda: toggle_rail(app))
+        self.bottom_btn = _icon_button("panel_bottom", "Bottom panel: show or hide (Ctrl+3)",
+                                       lambda: toggle_bottom(app))
+        self.side_btn = _icon_button("panel_right", "Side panel: show or hide (Ctrl+2)",
+                                     lambda: toggle_side(app))
+        for btn in (self.rail_btn, self.bottom_btn, self.side_btn):
+            btn.setCheckable(True)
+            btn.setChecked(True)
         self.undo_btn = _icon_button("undo", "Undo (Ctrl+Z)", lambda: shortcuts.undo(app))
         self.redo_btn = _icon_button("redo", "Redo (Ctrl+Y)", lambda: shortcuts.redo(app))
         self.theme_btn = _icon_button("moon", "Toggle dark theme", self._toggle_theme)
 
         for widget in (brand, self._gap(12), self.room, self.copy_btn, self._gap(8), self.address,
-                       self._gap(8), self.chip, spacer, self.undo_btn, self.redo_btn):
+                       self._gap(8), self.chip, spacer, self.rail_btn, self.bottom_btn,
+                       self.side_btn):
             self.addWidget(widget)
+        self.addSeparator()
+        self.addWidget(self.undo_btn)
+        self.addWidget(self.redo_btn)
         self.addSeparator()
         self.addWidget(self.theme_btn)
 
@@ -221,7 +235,8 @@ class TopBar(QToolBar):
         dark = theme.current_mode() == "dark"
         self.theme_btn.setProperty("iconName", "sun" if dark else "moon")
         self.theme_btn.setToolTip("Switch to the %s theme" % ("light" if dark else "dark"))
-        for btn in (self.copy_btn, self.undo_btn, self.redo_btn, self.theme_btn):
+        for btn in (self.copy_btn, self.undo_btn, self.redo_btn, self.theme_btn, self.rail_btn,
+                    self.bottom_btn, self.side_btn):
             _paint_icon(btn)
 
 
@@ -590,6 +605,7 @@ def apply_default_layout(window):
     """Arrange the docks the default way: tools left, Users over Chat right, bottom tabbed."""
     window.setCorner(Qt.BottomLeftCorner, Qt.LeftDockWidgetArea)
     window.setCorner(Qt.BottomRightCorner, Qt.RightDockWidgetArea)
+    window.setTabPosition(Qt.BottomDockWidgetArea, QTabWidget.North)   # tabs act as its header
     docks = {name: _dock(window, name) for name in DOCK_NAMES}
     tools, users, chat = docks["dock_tools"], docks["dock_users"], docks["dock_chat"]
     history, stats = docks["dock_history"], docks["dock_stats"]
@@ -688,8 +704,14 @@ def reset_layout(app):
     window = getattr(app, "window", None)
     if window is None:
         return
-    QSettings(SETTINGS_ORG, SETTINGS_APP).remove(STATE_KEY)
+    settings = _settings()
+    for key in (STATE_KEY, RAIL_KEY, FOLD_KEY):
+        settings.remove(key)
+    set_rail_collapsed(window, False, save=False)
+    for name in SIDE_DOCKS:
+        set_folded(window, name, False, save=False)
     apply_default_layout(window)
+    _sync_area_buttons(window)
     app.toast("Layout reset.")
 
 
@@ -706,6 +728,329 @@ def _restyle_banner(window):
         banner.setStyleSheet("")            # drop the fixed yellow; the theme styles it
         banner.setObjectName("viewOnlyBanner")
         theme.repolish(banner)
+
+
+# --- panel headers, folding and collapsible areas (phase 4B) -----------------------
+
+HEADER_H = 36             # height of every dock header (and of the bottom tab bar)
+RAIL_W = 54               # width of the collapsed tool rail (icons only)
+PANEL_MARGIN = 8          # inner margin of every panel
+QWIDGETSIZE_MAX = 16777215
+RAIL_KEY = "window/rail_collapsed"
+FOLD_KEY = "window/folded_docks"
+HEADER_DOCKS = {          # dock -> (icon, can fold its content)
+    "dock_tools": ("pen", False), "dock_users": ("users", True), "dock_chat": ("chat", True),
+}
+SIDE_DOCKS = ("dock_users", "dock_chat")
+BOTTOM_DOCKS = ("dock_history", "dock_stats")
+
+
+class DockHeader(QWidget):
+    """Themed dock title bar: panel icon, title and one small collapse button.
+
+    It replaces Qt's title bar (and with it the float and close buttons), so a
+    panel cannot be torn off or lost by accident; View still shows or hides it.
+    """
+
+    def __init__(self, dock, icon_name, on_collapse, chevrons):
+        """dock: its QDockWidget; on_collapse(): button slot; chevrons: (expanded, collapsed) icons."""
+        super().__init__(dock)
+        self.setObjectName("dockHeader")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(HEADER_H)
+        self.icon_name = icon_name
+        self.chevrons = chevrons
+        self.collapsed = False
+        self.icon = QLabel()
+        self.title = QLabel(dock.windowTitle())
+        self.title.setObjectName("dockTitle")
+        self.button = QToolButton()
+        self.button.setObjectName("dockCollapse")
+        self.button.setAutoRaise(True)
+        self.button.setIconSize(QSize(16, 16))
+        self.button.clicked.connect(on_collapse)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 0, 6, 0)
+        row.setSpacing(8)
+        row.addWidget(self.icon)
+        row.addWidget(self.title)
+        row.addStretch(1)
+        row.addWidget(self.button)
+        theme.notifier.changed.connect(self.repaint_icons)
+        self.set_collapsed(False)
+
+    def set_collapsed(self, collapsed, compact=False):
+        """Show the collapsed/expanded chevron; compact hides icon and title (narrow rail)."""
+        self.collapsed = collapsed
+        self.icon.setVisible(not compact)
+        self.title.setVisible(not compact)
+        self.layout().setContentsMargins(*((0, 0, 0, 0) if compact else (10, 0, 6, 0)))
+        self.button.setToolTip(("Expand " if collapsed else "Collapse ") + self.title.text())
+        self.repaint_icons()
+
+    def repaint_icons(self, _mode=None):
+        """Paint the icon and the chevron in the active theme's colours."""
+        t = theme.tokens()
+        self.icon.setPixmap(icons.pixmap(self.icon_name, 16, t["text_soft"]))
+        self.button.setIcon(icons.get_icon(self.chevrons[1] if self.collapsed else self.chevrons[0],
+                                           16, t["text_soft"]))
+
+
+class CompactRail(QWidget):
+    """The collapsed tool rail: one icon button per tool in a single column.
+
+    It only calls MainWindow.select_tool (the one entry point for changing
+    tools) and follows MainWindow.tool_selected, so it always agrees with the
+    full rail, the shortcuts and the canvas. Viewers get it greyed out, like
+    P2's dock (the server checks the role anyway).
+    """
+
+    def __init__(self, app, window):
+        """Build the column of tool buttons from registry.TOOLS."""
+        super().__init__()
+        self.app = app
+        self.window = window
+        self.setObjectName("compactRail")
+        self.buttons = {}
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, PANEL_MARGIN, 0, PANEL_MARGIN)
+        column.setSpacing(4)
+        last_group = None
+        for tool_id, cls in registry.TOOLS.items():
+            group = getattr(cls, "group", None)
+            if last_group is not None and group != last_group:
+                line = QFrame()
+                line.setObjectName("railDivider")
+                line.setFixedSize(TOOL_BUTTON - 10, 1)
+                column.addWidget(line, 0, Qt.AlignHCenter)
+            last_group = group
+            label = getattr(cls, "label", None) or tool_id
+            key = getattr(cls, "shortcut", None)
+            btn = QToolButton()
+            btn.setCheckable(True)
+            btn.setFixedSize(TOOL_BUTTON, TOOL_BUTTON)
+            btn.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
+            btn.setToolTip("%s (%s)" % (label, key) if key else label)
+            btn.setProperty("railCompact", True)
+            btn.clicked.connect(lambda _c, t=tool_id: self.window.select_tool(t))
+            self.group.addButton(btn)
+            self.buttons[tool_id] = btn
+            column.addWidget(btn, 0, Qt.AlignHCenter)
+        column.addStretch(1)
+        window.tool_selected.connect(self.follow)
+        app.role_changed.connect(self.apply_role)
+        theme.notifier.changed.connect(self.repaint_icons)
+        self.repaint_icons()
+        self.follow(getattr(app.active_tool, "id", None))
+        self.apply_role()
+
+    def follow(self, tool_id):
+        """Check the button of the active tool."""
+        btn = self.buttons.get(tool_id)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
+
+    def apply_role(self):
+        """Grey out every tool for a viewer."""
+        self.setEnabled(self.app.me.role != "viewer")
+
+    def repaint_icons(self, _mode=None):
+        """Paint the tool icons in the active theme's colours."""
+        t = theme.tokens()
+        for tool_id, btn in self.buttons.items():
+            btn.setIcon(icons.get_state_icon(theme.TOOL_ICONS.get(tool_id, tool_id), theme.ICON_SIZE,
+                                             normal=t["text_soft"], checked=t["primary_text"],
+                                             disabled=t["disabled_text"], active=t["text"]))
+
+
+def _settings():
+    """The client's QSettings."""
+    return QSettings(SETTINGS_ORG, SETTINGS_APP)
+
+
+def _make_rail_stack(app, window):
+    """Put the full tool panel and the CompactRail into one stack inside the tool dock."""
+    dock = _dock(window, "dock_tools")
+    full = dock.widget() if dock is not None else None
+    if full is None or isinstance(full, QStackedWidget):
+        return
+    stack = QStackedWidget()
+    stack.setObjectName("toolStack")
+    stack.addWidget(full)
+    stack.addWidget(CompactRail(app, window))
+    dock.setWidget(stack)
+
+
+def set_rail_collapsed(window, collapsed, save=True):
+    """Show the tool rail as icons only (collapsed) or with all its settings (expanded)."""
+    dock = _dock(window, "dock_tools")
+    stack = dock.widget() if dock is not None else None
+    if not isinstance(stack, QStackedWidget):
+        return
+    full = stack.widget(0)
+    if full.property("fullMinWidth") is None:
+        full.setProperty("fullMinWidth", full.minimumWidth())
+    stack.setCurrentIndex(1 if collapsed else 0)
+    # The hidden page must not size the stack, or the rail could never get narrow.
+    for i in range(stack.count()):
+        stack.widget(i).setSizePolicy(QSizePolicy.Preferred if i == stack.currentIndex()
+                                      else QSizePolicy.Ignored,
+                                      QSizePolicy.Preferred if i == stack.currentIndex()
+                                      else QSizePolicy.Ignored)
+    full.setMinimumWidth(0 if collapsed else int(full.property("fullMinWidth")))
+    header = dock.titleBarWidget()
+    if isinstance(header, DockHeader):
+        header.set_collapsed(collapsed, compact=collapsed)
+    if collapsed:
+        dock.setMaximumWidth(RAIL_W)
+        window.resizeDocks([dock], [RAIL_W], Qt.Horizontal)
+    else:
+        dock.setMaximumWidth(QWIDGETSIZE_MAX)
+        window.resizeDocks([dock], [max(LEFT_WIDTH, full.minimumWidth())], Qt.Horizontal)
+    dock.setProperty("railCollapsed", bool(collapsed))
+    if save:
+        _settings().setValue(RAIL_KEY, bool(collapsed))
+    _sync_area_buttons(window)
+
+
+def rail_collapsed(window):
+    """True while the tool rail shows icons only."""
+    dock = _dock(window, "dock_tools")
+    return bool(dock is not None and dock.property("railCollapsed"))
+
+
+def set_folded(window, name, folded, save=True):
+    """Fold a dock to its header (content hidden) or unfold it."""
+    dock = _dock(window, name)
+    if dock is None or dock.widget() is None:
+        return
+    dock.widget().setVisible(not folded)
+    dock.setMaximumHeight(HEADER_H + 2 if folded else QWIDGETSIZE_MAX)
+    dock.setProperty("folded", bool(folded))
+    header = dock.titleBarWidget()
+    if isinstance(header, DockHeader):
+        header.set_collapsed(folded)
+    if not folded and name == "dock_users":
+        QTimer.singleShot(0, lambda: _fit_users_dock(window))
+    if save:
+        folded_now = [n for n in HEADER_DOCKS if _dock(window, n) is not None
+                      and _dock(window, n).property("folded")]
+        _settings().setValue(FOLD_KEY, ",".join(folded_now))
+
+
+def _install_headers(window):
+    """Give Tools, Users and Chat a DockHeader; lock every dock in place."""
+    for name in DOCK_NAMES:
+        dock = _dock(window, name)
+        if dock is None:
+            continue
+        # No moving, floating or closing: the layout stays tidy and nothing gets lost.
+        dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        if name not in HEADER_DOCKS:
+            continue
+        icon_name, folds = HEADER_DOCKS[name]
+        if folds:
+            slot = lambda _c=False, n=name: set_folded(window, n, not _dock(window, n).property("folded"))
+            chevrons = ("chevron_up", "chevron_down")
+        else:
+            slot = lambda _c=False: set_rail_collapsed(window, not rail_collapsed(window))
+            chevrons = ("chevron_left", "chevron_right")
+        dock.setTitleBarWidget(DockHeader(dock, icon_name, slot, chevrons))
+
+
+def _even_margins(window):
+    """The same inner margin in every panel (the panels' own layouts, spacing untouched)."""
+    for name in DOCK_NAMES:
+        dock = _dock(window, name)
+        panel = dock.widget() if dock is not None else None
+        if isinstance(panel, QStackedWidget):
+            panel = panel.widget(0)
+        if isinstance(panel, QScrollArea):
+            panel = panel.widget()
+        layout = panel.layout() if panel is not None else None
+        if layout is not None:
+            layout.setContentsMargins(PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN, PANEL_MARGIN)
+
+
+def _area_shown(window, names):
+    """True while any dock of names is shown (a dock behind a tab counts with its group)."""
+    return any(_dock(window, n) is not None and not _dock(window, n).isHidden() for n in names)
+
+
+def _set_area(window, names, shown):
+    """Show or hide every dock of names; the canvas takes the freed space."""
+    for n in names:
+        dock = _dock(window, n)
+        if dock is not None:
+            dock.setVisible(shown)
+    if shown and names == BOTTOM_DOCKS:
+        history = _dock(window, "dock_history")
+        if history is not None:
+            history.raise_()
+    _sync_area_buttons(window)
+
+
+def toggle_rail(app):
+    """View / Ctrl+1: collapse the tool rail to icons, or expand it again."""
+    window = getattr(app, "window", None)
+    if window is not None:
+        set_rail_collapsed(window, not rail_collapsed(window))
+
+
+def toggle_side(app):
+    """View / Ctrl+2: hide or show the right panel (Users and Chat)."""
+    window = getattr(app, "window", None)
+    if window is not None:
+        _set_area(window, SIDE_DOCKS, not _area_shown(window, SIDE_DOCKS))
+
+
+def toggle_bottom(app):
+    """View / Ctrl+3: hide or show the bottom panel (History, Latency and traffic)."""
+    window = getattr(app, "window", None)
+    if window is not None:
+        _set_area(window, BOTTOM_DOCKS, not _area_shown(window, BOTTOM_DOCKS))
+
+
+def _sync_area_buttons(window):
+    """Check the top-bar toggles of the areas that are shown / expanded."""
+    bar = window.findChild(TopBar)
+    if bar is None:
+        return
+    states = {bar.rail_btn: not rail_collapsed(window),
+              bar.side_btn: _area_shown(window, SIDE_DOCKS),
+              bar.bottom_btn: _area_shown(window, BOTTOM_DOCKS)}
+    for btn, on in states.items():
+        btn.blockSignals(True)
+        btn.setChecked(on)
+        btn.blockSignals(False)
+
+
+def _follow_dock_visibility(window):
+    """Keep the top-bar toggles right when docks are shown or hidden from the View menu."""
+    for name in DOCK_NAMES:
+        dock = _dock(window, name)
+        if dock is not None:
+            dock.visibilityChanged.connect(lambda _v: _sync_area_buttons(window))
+
+
+def _restore_collapse_state(window):
+    """Re-apply the saved rail and fold state (QSettings); defaults: expanded, unfolded."""
+    settings = _settings()
+    collapsed = str(settings.value(RAIL_KEY, False)).lower() in ("true", "1")
+    set_rail_collapsed(window, collapsed, save=False)
+    folded = [n for n in str(settings.value(FOLD_KEY, "") or "").split(",") if n in HEADER_DOCKS]
+    for name in HEADER_DOCKS:
+        if HEADER_DOCKS[name][1]:
+            set_folded(window, name, name in folded, save=False)
+
+
+registry.register_menu_action("View", "Collapse or expand the tool rail", toggle_rail,
+                              shortcut="Ctrl+1")
+registry.register_menu_action("View", "Show or hide the side panel", toggle_side, shortcut="Ctrl+2")
+registry.register_menu_action("View", "Show or hide the bottom panel", toggle_bottom,
+                              shortcut="Ctrl+3")
 
 
 # --- entry point ------------------------------------------------------------------------
@@ -729,11 +1074,17 @@ def install(app, window):
         if dock is not None:
             _safely(_drop_title_bar, dock)
     _safely(_add_send_button, window)
+    _safely(_make_rail_stack, app, window)
+    _safely(_install_headers, window)
+    _safely(_even_margins, window)
     _safely(_build_status_bar, app, window)
     _safely(_restyle_banner, window)
     _safely(apply_default_layout, window)
     _safely(restore_layout, window)
+    _safely(_restore_collapse_state, window)
     _safely(_follow_users_rows, window)
+    _safely(_follow_dock_visibility, window)
+    _safely(_sync_area_buttons, window)
     theme.decorate_widgets(window)            # icons for the widgets added above
     qapp = QApplication.instance()
     if qapp is not None:

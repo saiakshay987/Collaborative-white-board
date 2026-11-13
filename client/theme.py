@@ -245,7 +245,7 @@ def pick_font_family():
 _QSS = Template("""
 /* ---- windows and dialogs ---- */
 QMainWindow { background: $bg; }
-QMainWindow::separator { background: $bg; width: 4px; height: 4px; }
+QMainWindow::separator { background: $bg; width: 3px; height: 3px; }
 QMainWindow::separator:hover { background: $primary_soft; }
 QDialog { background: $surface; }
 
@@ -519,6 +519,15 @@ QLabel[tone="info"] { background: $primary_soft; color: $primary_text; }
 QLabel[toneText="error"] { color: $danger_text; }
 QLabel[toneText="warning"] { color: $warning_text; }
 QLabel[toneText="success"] { color: $success_text; }
+
+/* ---- dock headers, compact rail, bottom tabs (phase 4B) ---- */
+QWidget#dockHeader { background: $surface; border-bottom: 1px solid $border; }
+QLabel#dockTitle { font-weight: 600; }
+QToolButton#dockCollapse { padding: 2px; border-radius: 6px; }
+QFrame#railDivider { background: $border; border: none; }
+QWidget#compactRail { background: transparent; }
+QMainWindow > QTabBar { background: $surface; border-bottom: 1px solid $border; }
+QMainWindow > QTabBar::tab { min-height: 22px; padding: 6px 14px; }
 
 /* ---- toasts (phase 4) ---- */
 QFrame#toast { background: $surface; border: 1px solid $border_strong; border-radius: ${rk}px; }

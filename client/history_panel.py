@@ -50,6 +50,7 @@ MAX_NAME_LEN = 60                       # longest version name the server accept
 HOST_ONLY_TIP = "Only the host can %s a version"   # tooltip of a disabled button / menu entry
 AUTO_NAME_RESTORE = "before restore "   # the names the server gives to its automatic versions
 AUTO_NAME_CLEAR = "before clear"
+EMPTY_TEXT = "No versions yet. Save one to keep a snapshot."   # shown while the list is empty
 
 
 # ---------------------------------------------------------------- small pure helpers
@@ -263,13 +264,16 @@ class HistoryPanel(QWidget):
         self.table.verticalHeader().hide()
         self.table.setMinimumHeight(90)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Interactive)   # Name: fixed start width, draggable
-        header.resizeSection(0, 240)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)       # Name fills the width
         for col in (1, 2, 3):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        header.setStretchLastSection(False)
         self.table.setShowGrid(False)                              # card-style rows: client/theme.py
         self.table.verticalHeader().setDefaultSectionSize(32)
+        # Shown over the empty list (muted, centred; clicks go through to the table).
+        self.empty_label = QLabel(EMPTY_TEXT, self.table.viewport())
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setProperty("muted", True)
+        self.empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         self.save_btn = QPushButton("Save version")
         self.save_btn.setObjectName("historySave")
@@ -358,7 +362,18 @@ class HistoryPanel(QWidget):
                 self.table.setItem(row, col, item)
             if keep is not None and keep["id"] == v["id"]:
                 self.table.selectRow(row)
+        self.empty_label.setVisible(self.table.rowCount() == 0)
+        self._place_empty_label()
         self.refresh_buttons()
+
+    def _place_empty_label(self):
+        """Stretch the empty-list text over the table's visible area."""
+        self.empty_label.setGeometry(self.table.viewport().rect())
+
+    def resizeEvent(self, event):
+        """Keep the empty-list text centred when the panel (and so the table) is resized."""
+        super().resizeEvent(event)
+        self._place_empty_label()
 
     def refresh_buttons(self):
         """Enable the buttons the role may use (the server checks again)."""
