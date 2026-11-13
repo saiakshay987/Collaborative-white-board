@@ -41,12 +41,14 @@ from PyQt5.QtWidgets import (QPlainTextEdit, QTabWidget, QTextBrowser, QVBoxLayo
                              QWidget)
 
 from common import protocol
+from client import theme
 from client.registry import on_message, on_session_reset, register_panel
 
 ROOM_TAB = "Room"            # label of the room tab
 ROOM_KEY = "room"            # conversation key of the room; DMs use "dm:<name>"
 FALLBACK_COLOR = "#555555"   # name colour when the sender is not in app.users
-OWN_BACKGROUND = "#e8f0fe"   # highlight of my own messages
+OWN_BACKGROUND = "#e8f0fe"   # highlight of my own messages (light theme; see _line_html)
+EMPTY_TEXT = "No messages yet. Say hello to the room."   # shown while a conversation is empty
 BOTTOM_TOLERANCE = 4         # pixels: "at the bottom" if the scrollbar is this close
 
 
@@ -92,6 +94,7 @@ class ConversationView(QTextBrowser):
         self._messages = []   # message dicts, sorted by ts
         self._ids = set()     # msg_ids already shown
         self._note_count = 0  # source of ids for local notes
+        self.setPlaceholderText(EMPTY_TEXT if key == ROOM_KEY else "No messages yet.")
 
     # -- data ----------------------------------------------------------------
 
@@ -162,20 +165,25 @@ class ConversationView(QTextBrowser):
         My own messages are right-aligned on a tinted background.
         Everything that comes from the network goes through html.escape.
         """
+        t = theme.tokens()                      # colours of the active light/dark theme
         if msg.get("note"):
-            return ('<p style="color:#888888"><i>%s</i></p>' % html.escape(str(msg.get("text", ""))))
+            return ('<p style="color:%s"><i>%s</i></p>' % (t["muted"], html.escape(str(msg.get("text", "")))))
         sender = str(msg.get("from", "?"))
         mine = sender == self.app.me.username
         body = html.escape(str(msg.get("text", ""))).replace("\n", "<br>")
         stamp = format_time(msg.get("ts") or 0.0)
-        color = html.escape(self._color_of(sender), quote=True)
-        line = ('<span style="color:#888888">%s</span> '
-                '<b style="color:%s">%s</b><br>%s'
-                % (stamp, color, html.escape(sender), body))
-        align = "right" if mine else "left"
-        background = ' bgcolor="%s"' % OWN_BACKGROUND if mine else ""
-        return ('<table width="100%%" cellspacing="0" cellpadding="3"><tr>'
-                '<td align="%s"%s>%s</td></tr></table>' % (align, background, line))
+        bubble = t["primary_soft"] if mine else t["surface_alt"]
+        color = html.escape(theme.readable(self._color_of(sender), bubble), quote=True)
+        head = ('<span style="color:%s">%s</span>' % (t["muted"], stamp) if mine else
+                '<b style="color:%s">%s</b>&nbsp;&nbsp;<span style="color:%s">%s</span>'
+                % (color, html.escape(sender), t["muted"], stamp))
+        line = '%s<br><span style="color:%s">%s</span>' % (head, t["text"], body)
+        # A bubble: my own on the right in primary_soft, others on the left; the empty cell
+        # on the other side keeps every bubble at most 80 % wide.
+        cell = '<td width="80%%" bgcolor="%s">%s</td>' % (bubble, line)
+        cells = ('<td width="20%%"></td>' + cell) if mine else (cell + '<td width="20%%"></td>')
+        return ('<table width="100%%" cellspacing="0" cellpadding="7" style="margin-top:6px">'
+                '<tr>%s</tr></table>' % cells)
 
 
 class ChatPanel(QWidget):
@@ -211,6 +219,9 @@ class ChatPanel(QWidget):
             app.net.reconnecting.connect(lambda: self._set_link(False))
             app.net.disconnected.connect(lambda _reason: self._set_link(False))
         self._update_input()
+        # Bubble colours come from the theme: re-render the open conversations when it changes.
+        theme.notifier.changed.connect(
+            lambda _mode: [view.render_all() for view in self._views.values()])
 
     # -- conversations ---------------------------------------------------------
 

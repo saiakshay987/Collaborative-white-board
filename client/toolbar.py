@@ -73,7 +73,7 @@ from PyQt5.QtWidgets import (QButtonGroup, QColorDialog, QComboBox, QGridLayout,
                              QHBoxLayout, QLabel, QSizePolicy, QSlider, QSpinBox, QToolButton,
                              QVBoxLayout, QWidget)
 
-from client import ops, registry, render_text
+from client import ops, registry, render_text, theme
 from common import kinds_text, protocol
 
 # 12 palette colors, '#rrggbb' as the contract requires for object colors.
@@ -116,10 +116,13 @@ def _tool_tooltip(cls):
 
 
 def _swatch_style(color, checked_border="#1565c0"):
-    """Style sheet for a color swatch button: filled square, thick border when checked."""
-    return ("QToolButton { background: %s; border: 1px solid #888; border-radius: 3px; }"
-            "QToolButton:checked { border: 3px solid %s; }"
-            "QToolButton:disabled { border: 1px dashed #bbb; }" % (color, checked_border))
+    """Style sheet for a color swatch button: only its fill colour.
+
+    The round shape, the outline and the ring of the selected swatch come from
+    the theme (QToolButton#swatch in client/theme.py), so they follow light/dark.
+    checked_border is kept for callers; the ring uses the theme's primary colour.
+    """
+    return "QToolButton { background: %s; }" % color
 
 
 def _fmt_width(value):
@@ -165,9 +168,10 @@ class WidthPreview(QWidget):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing, True)
-            painter.fillRect(self.rect(), QColor("#f4f4f4"))
-            painter.setPen(QPen(QColor("#c8c8c8")))
-            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            # A small piece of the (always white) page, framed in the theme's border colour.
+            painter.setPen(QPen(QColor(theme.tokens()["border_strong"])))
+            painter.setBrush(QColor(theme.tokens()["page"]))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
             d = min(self._width, self.SIDE - 4.0)
             box = QRectF((self.width() - d) / 2.0, (self.height() - d) / 2.0, d, d)
             if self._ring:
@@ -226,7 +230,8 @@ class FormatBar(QGroupBox):
                               % (kinds_text.SIZE_MIN, kinds_text.SIZE_MAX))
         self._size.valueChanged.connect(self._on_size)
         self._ink = QToolButton()
-        self._ink.setFixedSize(QSize(28, 24))
+        self._ink.setObjectName("inkSwatch")        # round, outlined: client/theme.py
+        self._ink.setFixedSize(QSize(24, 24))
         self._ink.setToolTip("Text color")
         self._ink.clicked.connect(self._pick_ink)
         row.addWidget(QLabel("Size"))
@@ -280,6 +285,7 @@ class FormatBar(QGroupBox):
             sw.setCheckable(True)
             sw.setFixedSize(QSize(24, 24))
             sw.setToolTip(color)
+            sw.setObjectName("swatch")
             sw.setStyleSheet(_swatch_style(color))
             sw.clicked.connect(lambda _checked, c=color: self._send({}, bg=c))
             self._bg_swatches[color] = sw
@@ -387,8 +393,7 @@ class FormatBar(QGroupBox):
         self._size.setValue(values["size"])
         self._size.blockSignals(False)
         self._ink_color = values["ink"]             # where the color dialog starts
-        self._ink.setStyleSheet("QToolButton { background: %s; border: 1px solid #888;"
-                                " border-radius: 3px; }" % values["ink"])
+        self._ink.setStyleSheet("QToolButton { background: %s; }" % values["ink"])
         self._ink.setToolTip("Text color %s" % values["ink"])
         for field, btn in self._flags.items():
             btn.setChecked(values[field])
@@ -491,8 +496,7 @@ class ToolDock(QWidget):
 
         self._hint = QLabel(VIEWER_HINT)
         self._hint.setWordWrap(True)
-        self._hint.setStyleSheet("QLabel { background: #fff3cd; color: #664d03;"
-                                 " border: 1px solid #ffe69c; border-radius: 4px; padding: 6px; }")
+        self._hint.setObjectName("viewerHint")      # warning colours: client/theme.py
         self._hint.hide()
         layout.addWidget(self._hint)
 
@@ -683,6 +687,7 @@ class ToolDock(QWidget):
             sw.setCheckable(True)
             sw.setFixedSize(QSize(24, 24))
             sw.setToolTip(color)
+            sw.setObjectName("swatch")
             sw.setStyleSheet(_swatch_style(color))
             sw.clicked.connect(lambda _checked, c=color: self._set_color(c))
             self._swatch_group.addButton(sw)
@@ -693,6 +698,7 @@ class ToolDock(QWidget):
 
         more_row = QHBoxLayout()
         self._current_swatch = QLabel()
+        self._current_swatch.setObjectName("currentSwatch")   # round, outlined: client/theme.py
         self._current_swatch.setFixedSize(24, 24)
         self._current_swatch.setToolTip("Current color")
         more = QToolButton()
@@ -722,7 +728,7 @@ class ToolDock(QWidget):
         # What the tool will really draw (marker wider, highlighter see-through...).
         self._info_label = QLabel()
         self._info_label.setWordWrap(True)
-        self._info_label.setStyleSheet("QLabel { color: #555; }")
+        self._info_label.setProperty("muted", True)    # muted text colour: client/theme.py
         v.addWidget(self._info_label)
         return box
 
@@ -773,8 +779,7 @@ class ToolDock(QWidget):
                 self._swatch_group.setExclusive(False)
                 checked.setChecked(False)
                 self._swatch_group.setExclusive(True)
-        self._current_swatch.setStyleSheet("QLabel { background: %s; border: 1px solid #888;"
-                                           " border-radius: 3px; }" % color)
+        self._current_swatch.setStyleSheet("QLabel { background: %s; }" % color)
         self._current_swatch.setToolTip("Current color %s" % color)
 
         if self._width_slider.value() != width:
