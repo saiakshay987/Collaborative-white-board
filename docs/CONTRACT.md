@@ -172,7 +172,7 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 `server/bootstrap.py` and `client/bootstrap.py` import every module with plain import statements (PyInstaller needs static imports), in this order. The server's last line registers `versions.send_versions_on_join` as a join hook after chat, so VERSIONS follows CHAT_HISTORY.
 
 - Server: dispatcher, rooms, presence (P1); permissions (P4); board_state, board_ops, undo, sync, versions, assets (P3); chat (P4). Chat stays last so the join order is presence, snapshot, chat history.
-- Client: registry, app_state, net_client, board_model, render, render_draw, render_text, render_image, canvas, toolbar, tools.pen_tool, tools.shape_tools, tools.select_tool, tools.text_tool, tools.image_tool, shortcuts, draw_sync, chat_panel, users_panel, stats_panel, history_panel, cursor_overlay, toasts, export, connect_dialog, main_window.
+- Client: registry, app_state, net_client, board_model, render, render_draw, render_text, render_image, canvas, toolbar, tools.pen_tool, tools.shape_tools, tools.select_tool, tools.text_tool, tools.image_tool, shortcuts, draw_sync, chat_panel, users_panel, stats_panel, history_panel, cursor_overlay, toasts, export, icons, theme, connect_dialog, main_window.
 
 ## H. File map
 
@@ -180,7 +180,7 @@ Create every file as a stub with `# OWNER: P<n>` on line 1. Package folders need
 
 | Owner | Files |
 |---|---|
-| P1 | run_server.py, run_client.py, requirements.txt, .gitignore, build scripts, packaging/ (WhiteboardServer.spec, WhiteboardClient.spec, WhiteboardClient-console.spec, README_RUN.txt), common/app_paths.py, scripts/a_exe_smoke.py, docs/CONTRACT.md, common/config.py, common/framing.py, common/protocol.py, common/models.py, server/server.py, server/dispatcher.py, server/rooms.py, server/presence.py, server/bootstrap.py, client/net_client.py, client/registry.py, client/app_state.py, client/ops.py, client/render.py, client/bootstrap.py, client/connect_dialog.py, client/users_panel.py, client/stats_panel.py, client/toasts.py, client/cursor_overlay.py |
+| P1 | run_server.py, run_client.py, requirements.txt, .gitignore, build scripts, packaging/ (WhiteboardServer.spec, WhiteboardClient.spec, WhiteboardClient-console.spec, README_RUN.txt), common/app_paths.py, scripts/a_exe_smoke.py, docs/CONTRACT.md, common/config.py, common/framing.py, common/protocol.py, common/models.py, server/server.py, server/dispatcher.py, server/rooms.py, server/presence.py, server/bootstrap.py, client/net_client.py, client/registry.py, client/app_state.py, client/ops.py, client/render.py, client/bootstrap.py, client/connect_dialog.py, client/users_panel.py, client/stats_panel.py, client/toasts.py, client/cursor_overlay.py, client/theme.py, client/icons.py, client/shell.py, scripts/a_ui_smoke.py, docs/ui_handoff_for_akshay.md |
 | P2 | common/kinds_draw.py, client/canvas.py, client/toolbar.py, client/shortcuts.py, client/draw_sync.py, client/render_draw.py, client/tools/pen_tool.py, client/tools/shape_tools.py, client/tools/select_tool.py |
 | P3 | common/kinds_image.py, server/board_state.py, server/board_ops.py, server/undo.py, server/sync.py, server/versions.py, server/assets.py, client/board_model.py, client/history_panel.py, client/export.py, client/asset_cache.py, client/render_image.py, client/tools/image_tool.py |
 | P4 | common/kinds_text.py, server/chat.py, server/permissions.py, client/chat_panel.py, client/main_window.py, client/render_text.py, client/tools/text_tool.py, scripts/role_attack.py, docs/final/ |

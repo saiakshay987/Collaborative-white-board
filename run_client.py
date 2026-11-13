@@ -11,17 +11,22 @@ connect dialog again over the window, pre-filled with the last server, room
 code and username and showing the reason. Joining from it continues in the
 same window: the server kept the room, and JOIN_OK, USER_LIST, SNAPSHOT,
 CHAT_HISTORY and VERSIONS fill the emptied client. Cancel quits.
+
+Look: high-DPI scaling is switched on before the QApplication exists (Qt
+reads these attributes only then), and client/theme.py applies the saved
+light or dark theme before the first widget is built. theme.decorate_widgets
+then adds the painted icons to the window and the dialogs.
 """
 
 import sys
 
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QApplication, QLabel
 
 import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
 from client.board_model import BoardModel
-from client import cursor_overlay, toasts
+from client import cursor_overlay, theme, toasts
 from common import config
 from client.connect_dialog import ConnectDialog
 from client.main_window import MainWindow
@@ -133,6 +138,7 @@ class SessionFlow:
         self.app.reset_session()
         self.window.statusBar().clearMessage()
         dialog = ConnectDialog(self.app, self.window, notice=reason, prefill=self.last)
+        theme.decorate_widgets(dialog)
         accepted = dialog.exec_() == ConnectDialog.Accepted
         if accepted:
             self.busy = False        # joined again: the next end of session starts this flow anew
@@ -144,10 +150,27 @@ class SessionFlow:
         self.window.close()
 
 
+def enable_high_dpi():
+    """Turn on Qt's high-DPI support; must run BEFORE the QApplication is created.
+
+    AA_EnableHighDpiScaling scales the whole UI by the screen's scale factor
+    (125 %, 150 % on Windows laptops), AA_UseHighDpiPixmaps lets the painted
+    icons carry a device pixel ratio so they stay sharp, and the PassThrough
+    rounding policy (Qt 5.14+) keeps 125 % at 1.25 instead of rounding it to 1.
+    """
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
+
 def main():
     """Create state, run the connect dialog, then the main window and event loop."""
+    enable_high_dpi()
     qapp = QApplication(sys.argv)
     qapp.setApplicationName("LAN Whiteboard")
+    theme.apply_theme(qapp)      # the saved light/dark theme, before any widget exists
 
     app = AppState()
     app.net = NetClient(app)
@@ -156,13 +179,16 @@ def main():
     # Board messages (SNAPSHOT, CHAT_HISTORY, ...) may arrive while the
     # dialog is still open; the handlers store them in app.board etc., so
     # the window built afterwards shows them.
-    if ConnectDialog(app).exec_() != ConnectDialog.Accepted:
+    dialog = ConnectDialog(app)
+    theme.decorate_widgets(dialog)
+    if dialog.exec_() != ConnectDialog.Accepted:
         app.net.disconnect()
         return 0
 
     window = MainWindow(app)
     app.window = window
     wire_status(app, window)
+    theme.decorate_widgets(window)
     flow = SessionFlow(app, window)
     app.net.disconnected.connect(flow.on_disconnected)
     qapp.aboutToQuit.connect(lambda: setattr(flow, "quitting", True))

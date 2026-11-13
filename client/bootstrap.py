@@ -3,8 +3,9 @@
 
 Contract section G. Plain static imports (PyInstaller cannot see dynamic
 imports), in the contract order: infrastructure first, then renderers,
-canvas and tools, then panels, and main_window last so it sees every
-registration.
+canvas and tools, then panels, the look (icons, theme: painted icons and
+the style sheet; theme registers View > Toggle dark theme), and
+main_window last so it sees every registration.
 """
 
 from client import registry  # noqa: F401
@@ -31,5 +32,7 @@ from client import history_panel  # noqa: F401
 from client import cursor_overlay  # noqa: F401
 from client import toasts  # noqa: F401
 from client import export  # noqa: F401
+from client import icons  # noqa: F401
+from client import theme  # noqa: F401
 from client import connect_dialog  # noqa: F401
 from client import main_window  # noqa: F401
