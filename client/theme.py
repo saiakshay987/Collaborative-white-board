@@ -480,6 +480,20 @@ HistoryPanel QTableWidget::item { border-bottom: 1px solid $border; padding: 4px
 HistoryPanel QTableWidget::item:selected { background: $primary_soft; color: $primary_text; }
 HistoryPanel QPushButton { padding: 4px 8px; min-height: 16px; }
 HistoryPanel QPushButton#historySave { padding: 4px 12px; }
+
+/* ---- panels (phase 3): tool rail titles, users, chat, stats tiles ---- */
+ToolDock QGroupBox::title { left: 7px; }
+QListWidget#usersList { border: none; background: transparent; padding: 0px; }
+QListWidget#usersList::item, QListWidget#usersList::item:hover,
+QListWidget#usersList::item:selected { background: transparent; border: none; }
+ChatInput { border-radius: ${rk}px; padding: 6px 10px; }
+ConversationView { border: none; background: $surface; }
+QToolButton#sendButton { background: $primary; border: none; border-radius: 18px; }
+QToolButton#sendButton:hover { background: $primary_hover; }
+QToolButton#sendButton:pressed { background: $primary_hover; }
+QToolButton#sendButton:disabled { background: $disabled_bg; }
+QFrame#metricTile { background: $surface_alt; }
+QLabel#metricValue { font-size: 12pt; font-weight: 600; }
 QLabel#viewOnlyBanner { background: $warning_soft; color: $warning_text; font-weight: 600; }
 """)
 

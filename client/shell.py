@@ -19,8 +19,9 @@ What install() does
       small groups side by side, the colour palette in 6 columns. The buttons
       are P2's own, so tool selection, per-tool memory and the viewer lock
       work exactly as before.
-    * Right side: Users (short) above Chat (the rest of the height), both
-      always visible. Bottom: History and Latency/traffic tabbed in one short
+    * Right side: Users above Chat, both always visible. Users is only as tall
+      as its rows (it follows UsersPanel.rows_changed); Chat takes the rest
+      and gets a round send button next to its input. Bottom: History and Latency/traffic tabbed in one short
       dock. Panels sit in scroll areas so a tall panel can never make the
       window taller than a 1366x768 screen.
     * Status bar: pills for name and role, room, address and connection, plus
@@ -34,12 +35,12 @@ Everything runs on the GUI thread; the widgets here follow AppState and
 NetClient signals and never touch a socket.
 """
 
-from PyQt5.QtCore import QByteArray, QSettings, QSize, Qt
+from PyQt5.QtCore import QByteArray, QEvent, QObject, QSettings, QSize, Qt, QTimer
 from PyQt5.QtWidgets import (QApplication, QDockWidget, QFrame, QGridLayout, QGroupBox,
                              QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QToolBar, QToolButton,
                              QWidget)
 
-from client import icons, registry, shortcuts, stats_panel, theme
+from client import chat_panel, icons, registry, shortcuts, stats_panel, theme, users_panel
 from client.main_window import ViewOnlyBanner
 
 # Layout sizes (logical pixels).
@@ -48,14 +49,14 @@ TOOL_COLUMNS = 4          # tool buttons per row inside a group
 SWATCH_COLUMNS = 6        # colour swatches per row
 LEFT_WIDTH = 204
 RIGHT_WIDTH = 280
-USERS_HEIGHT = 190        # Users starts a few rows tall; Chat takes the rest
-BOTTOM_HEIGHT = 240       # History / Latency starts short; the canvas gets the rest
+USERS_HEIGHT = 190        # Users before its rows are known; then it fits its rows
+BOTTOM_HEIGHT = 200       # History / Latency starts short; the canvas gets the rest
 
 # QSettings: the same file as the rest of the client.
 SETTINGS_ORG = "CN Lab"
 SETTINGS_APP = "LAN Whiteboard"
 STATE_KEY = "window/dock_state"
-STATE_VERSION = 2         # bump when the default arrangement changes; old states are ignored
+STATE_VERSION = 3         # bump when the default arrangement changes; old states are ignored
 
 DOCK_NAMES = ("dock_tools", "dock_users", "dock_chat", "dock_history", "dock_stats")
 SCROLLED_DOCKS = ("dock_tools", "dock_history", "dock_stats")
@@ -406,9 +407,12 @@ def _compact_tool_dock(window):
             continue
         if row is None or used + count > TOOL_COLUMNS:
             row = QHBoxLayout()
-            row.setSpacing(10)
+            row.setSpacing(4)                         # the same gap as inside a group: one grid
             outer.addLayout(row)
             used = 0
+        # A one-tool group is narrower than its title ("Select", "Media"): make room for it.
+        title_w = box.fontMetrics().horizontalAdvance(box.title()) + 14
+        box.setMinimumWidth(max(box.minimumSizeHint().width(), title_w))
         row.addWidget(box)
         used += count
     if row is not None:
@@ -450,6 +454,80 @@ def _fit_tool_dock_width(window):
 def _drop_title_bar(dock):
     """Hide a dock's title bar (an empty widget replaces it); View menu still shows/hides it."""
     dock.setTitleBarWidget(QWidget())
+
+
+def _fit_users_dock(window):
+    """Make the Users dock exactly as tall as its rows (Chat below gets the rest)."""
+    dock = _dock(window, "dock_users")
+    panel = dock.widget() if dock is not None else None
+    if not isinstance(panel, users_panel.UsersPanel):
+        return
+    title = dock.height() - panel.height() if dock.isVisible() and panel.height() > 0 else 34
+    window.resizeDocks([dock], [panel.preferred_height() + max(title, 0)], Qt.Vertical)
+
+
+def _follow_users_rows(window):
+    """Refit the Users dock whenever the user list changes (after the layout has settled)."""
+    dock = _dock(window, "dock_users")
+    panel = dock.widget() if dock is not None else None
+    if isinstance(panel, users_panel.UsersPanel):
+        panel.rows_changed.connect(lambda: QTimer.singleShot(0, lambda: _fit_users_dock(window)))
+        QTimer.singleShot(0, lambda: _fit_users_dock(window))
+
+
+class _EnabledMirror(QObject):
+    """Keeps a button enabled exactly while another widget is (event filter on that widget)."""
+
+    def __init__(self, source, button):
+        """Mirror source's enabled state onto button from now on."""
+        super().__init__(button)
+        self.button = button
+        source.installEventFilter(self)
+        button.setEnabled(source.isEnabled())
+
+    def eventFilter(self, obj, event):
+        """On EnabledChange copy the state; never swallow the event."""
+        if event.type() == QEvent.EnabledChange:
+            self.button.setEnabled(obj.isEnabled())
+        return False
+
+
+def _add_send_button(window):
+    """Put a round send button next to the chat input; it does what Enter does.
+
+    The button calls ChatPanel.send_current, the same slot the input's Enter
+    key uses, and is enabled exactly while the input is (connected and in a room).
+    """
+    panel = window.findChild(chat_panel.ChatPanel)
+    if panel is None or panel.layout() is None:
+        return
+    layout, entry = panel.layout(), panel.input
+    layout.removeWidget(entry)
+    btn = QToolButton()
+    btn.setObjectName("sendButton")
+    btn.setToolTip("Send (Enter)")
+    btn.setFixedSize(36, 36)
+    btn.setIconSize(QSize(18, 18))
+    btn.setCursor(Qt.PointingHandCursor)
+
+    def paint_icon(_mode=None):
+        """The send icon in the colour that reads on the primary button."""
+        btn.setIcon(icons.get_icon("send", 18, theme.tokens()["on_primary"]))
+
+    def send():
+        """Send like Enter does, then give the input the focus back."""
+        panel.send_current()
+        entry.setFocus()
+
+    paint_icon()
+    theme.notifier.changed.connect(paint_icon)
+    btn.clicked.connect(send)
+    _EnabledMirror(entry, btn)
+    row = QHBoxLayout()
+    row.setSpacing(6)
+    row.addWidget(entry, 1)
+    row.addWidget(btn, 0, Qt.AlignBottom)
+    layout.addLayout(row)
 
 
 def _wrap_in_scroll(dock):
@@ -650,10 +728,12 @@ def install(app, window):
         dock = _dock(window, name)
         if dock is not None:
             _safely(_drop_title_bar, dock)
+    _safely(_add_send_button, window)
     _safely(_build_status_bar, app, window)
     _safely(_restyle_banner, window)
     _safely(apply_default_layout, window)
     _safely(restore_layout, window)
+    _safely(_follow_users_rows, window)
     theme.decorate_widgets(window)            # icons for the widgets added above
     qapp = QApplication.instance()
     if qapp is not None:

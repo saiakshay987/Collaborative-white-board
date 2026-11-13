@@ -130,6 +130,11 @@ def child(suffix):
         for w, h in sizes:
             window.resize(w, h)
             shoot(window, "main_%s_%dx%d" % (mode, w, h))
+        stats_dock = window.findChild(QDockWidget, "dock_stats")
+        if stats_dock is not None and not suffix:      # the Latency/traffic tab, for review
+            stats_dock.raise_()
+            shoot(window, "main_stats_%s_%dx%d" % (mode, SMALL[0], SMALL[1]))
+            window.findChild(QDockWidget, "dock_history").raise_()
     theme.apply_theme(qapp, "light", save=False)
 
     # --- layout checks at 1366x768 ------------------------------------------------------
