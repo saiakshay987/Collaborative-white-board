@@ -1,4 +1,3 @@
-# OWNER: P3
 """demo_lossy_sync.py: Live demo of 'delayed, duplicated or missing updates' (contract E2, E3).
 
 Run from the project root (PowerShell shown; Linux/macOS: WB_DROP_PCT=20 python scripts/...):
@@ -44,7 +43,7 @@ from client import ops, registry  # noqa: E402
 from client.app_state import AppState  # noqa: E402
 from client.board_model import BoardModel  # noqa: E402
 
-# Until P2/P4 finish their kinds_*.py, the server would reject every object as 'unknown kind'.
+# The demo brings its own kinds: without a registered kind the server would reject every object as 'unknown kind'.
 DEMO_KINDS = {
     'rect': {'required': {'x': float, 'y': float, 'w': float, 'h': float, 'color': str,
                           'width': float, 'fill': (str, type(None))},

@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_images.py: Tests for the client side of pictures: asset_cache, render_image and tools/image_tool.
 
 Run from the project root:  python scripts/test_images.py

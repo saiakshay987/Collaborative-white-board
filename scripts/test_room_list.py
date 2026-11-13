@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_room_list.py: Revision 5 end to end: saved rooms come back after a server restart and are listed.
 
 Run from the project root (no display needed):  python scripts/test_room_list.py

@@ -1,7 +1,6 @@
-# OWNER: P4
 """main_window.py: Main window: assembles the canvas, toolbar, menus and registered panels.
 
-The final shell (P4). Everything is built from client/registry.py, so
+The final shell (Harshith). Everything is built from client/registry.py, so
 features appear without editing this file:
     registry.TOOLS         -> "Tools" toolbar (one checkable action per tool)
     registry.MENU_ACTIONS  -> menu bar, in the fixed order File, Edit, View,
@@ -280,7 +279,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._refresh_title)
 
     def _build_canvas(self):
-        """Central widget: P2's CanvasWidget, or a placeholder until it exists."""
+        """Central widget: Akshay's CanvasWidget, or a placeholder until it exists."""
         cls = getattr(canvas_mod, "CanvasWidget", None)
         if self.app.canvas is not None:
             widget = self.app.canvas   # already created by someone else: just place it
@@ -288,7 +287,7 @@ class MainWindow(QMainWindow):
             widget = cls(self.app)
             self.app.canvas = widget
         else:
-            widget = QLabel("Canvas not implemented yet (P2)")
+            widget = QLabel("Canvas not implemented yet")
             widget.setAlignment(Qt.AlignCenter)
         self.setCentralWidget(widget)
 
@@ -296,7 +295,7 @@ class MainWindow(QMainWindow):
         """One checkable action per registered tool; exactly one is active.
 
         This toolbar is the ONLY owner of the tool keyboard shortcuts. If a
-        second widget (P2's tool dock) also bound the same keys, Qt would
+        second widget (Akshay's tool dock) also bound the same keys, Qt would
         treat every key as ambiguous and neither binding would fire. Other
         widgets therefore never set shortcuts; they call select_tool() to
         change the tool and listen to tool_selected to follow changes.

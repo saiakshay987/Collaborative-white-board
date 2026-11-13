@@ -1,4 +1,3 @@
-# OWNER: P1
 """terminal_client.py: Terminal test client: create or join a room and print every message.
 
 Run from the project root (server must be running):

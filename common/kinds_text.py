@@ -1,4 +1,3 @@
-# OWNER: P4
 """kinds_text.py: KINDS registry and validators for text and sticky objects.
 
 Contract section D (rev 3 + the text-format fields below). Two board kinds:

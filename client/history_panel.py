@@ -1,4 +1,3 @@
-# OWNER: P3
 """history_panel.py: Bottom dock panel for the version history, undo/redo and the board checksum (contract C3).
 
 What the panel shows and does:

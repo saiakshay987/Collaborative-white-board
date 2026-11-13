@@ -1,4 +1,3 @@
-# OWNER: P4
 """test_permissions_chat.py: unit tests for permissions.can, ChatLog, SET_ROLE, CHAT and the chat hooks.
 
 Run from the project root with either

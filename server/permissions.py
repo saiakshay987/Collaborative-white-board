@@ -1,4 +1,3 @@
-# OWNER: P4
 """permissions.py: can(role, action): the role/permission table for host, editor and viewer.
 
 Implements contract section C4. The server calls can(member.role, action)

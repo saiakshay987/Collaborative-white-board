@@ -1,4 +1,3 @@
-# OWNER: P1
 """rooms.py: Room, Member and RoomManager, plus the room lifecycle hooks.
 
 Contract section F (server).
@@ -11,9 +10,9 @@ room: operations are processed one at a time and the seq order is the truth
 (contract E1). It is an RLock so a handler holding the lock can call helpers
 (broadcast, hooks) that take it again without deadlocking.
 
-Hooks let other owners react to the room lifecycle without editing this
+Hooks let other modules react to the room lifecycle without editing this
 file. They run in registration order, i.e. in server/bootstrap.py import
-order (presence, then board/sync of P3, then chat of P4):
+order (presence, then board/sync of Janith, then chat of Harshith):
 
     rooms.on_room_created(fn(room))
     rooms.on_member_joined(fn(room, member, rejoin, last_seq))
@@ -55,7 +54,7 @@ REASON_KICKED = "kicked"
 # the room keeps its board, chat, versions and assets, so everybody can come
 # back later with the room code and find everything as they left it (the old
 # "delete an empty room after 10 minutes" rule is gone). Nothing on disk is
-# touched either: the autosave file (contract E7, P3) is written every 10 s.
+# touched either: the autosave file (contract E7, Janith) is written every 10 s.
 
 
 class JoinError(Exception):
@@ -121,7 +120,7 @@ _member_left_hooks = []
 def on_room_created(fn):
     """Register fn(room), called once right after a room is created.
 
-    P3 uses it to attach room.board / room.assets, P4 to attach room.chat.
+    Janith uses it to attach room.board / room.assets, Harshith to attach room.chat.
     Returns fn so it can be used as a decorator.
     """
     _room_created_hooks.append(fn)
@@ -150,7 +149,7 @@ def on_member_left(fn):
 
 def _run_hooks(hooks, *args):
     """Call every hook with args, in order. One failing hook is logged and
-    does not stop the others (a P4 bug must not break P3's snapshot)."""
+    does not stop the others (a bug in the chat hook must not break the board snapshot)."""
     for fn in list(hooks):
         try:
             fn(*args)
@@ -196,9 +195,9 @@ class Room:
         self.members = OrderedDict()  # name -> Member, in join order
         self.lock = threading.RLock()
         self.created_ts = time.time()
-        self.board = None   # attached by P3 (server/board_state.py)
-        self.chat = None    # attached by P4 (server/chat.py)
-        self.assets = None  # attached by P3 (server/assets.py)
+        self.board = None   # attached by Janith (server/board_state.py)
+        self.chat = None    # attached by Harshith (server/chat.py)
+        self.assets = None  # attached by Janith (server/assets.py)
         # Kept for code that checks it (versions.py autosave): rooms are no
         # longer deleted while the server runs, so this stays False.
         self.closed = False
@@ -265,7 +264,7 @@ class Room:
         content. `members` counts every username the room remembers (online
         or not), `online` those with a live connection right now. `updated`
         is the time of the last change that reached the autosave (the
-        VersionStore, P3, keeps it); a room without one reports its creation.
+        VersionStore, Janith, keeps it); a room without one reports its creation.
         """
         with self.lock:
             names = set(self.profiles) | set(self.members)

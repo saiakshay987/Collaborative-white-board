@@ -1,4 +1,3 @@
-# OWNER: P1
 """protocol.py: Message type names, envelope builder and op_id generator.
 
 Contract sections B and C. Every message type and envelope field used by the
@@ -12,7 +11,7 @@ import threading
 # Envelope version (contract section B: "v: always 1").
 VERSION = 1
 
-# --- C1. Session and presence (P1) -------------------------------------------
+# --- C1. Session and presence (Sharwan) -------------------------------------------
 CREATE_ROOM = "CREATE_ROOM"
 JOIN_ROOM = "JOIN_ROOM"
 JOIN_OK = "JOIN_OK"
@@ -27,7 +26,7 @@ CURSOR = "CURSOR"
 KICK = "KICK"
 ERROR = "ERROR"
 
-# --- C2. Board operations (P3 server side) -----------------------------------
+# --- C2. Board operations (Janith, server side) -----------------------------------
 OP_ADD = "OP_ADD"
 OP_STROKE_PART = "OP_STROKE_PART"
 OP_UPDATE = "OP_UPDATE"
@@ -36,7 +35,7 @@ OP_CLEAR = "OP_CLEAR"
 UNDO = "UNDO"
 REDO = "REDO"
 
-# --- C3. State, history and images (P3) --------------------------------------
+# --- C3. State, history and images (Janith) --------------------------------------
 SNAPSHOT = "SNAPSHOT"
 SYNC_REQUEST = "SYNC_REQUEST"
 SYNC_DELTA = "SYNC_DELTA"
@@ -52,7 +51,7 @@ IMG_END = "IMG_END"
 IMG_OK = "IMG_OK"
 ASSET_GET = "ASSET_GET"
 
-# --- C4. Chat and access (P4) ------------------------------------------------
+# --- C4. Chat and access (Harshith) ------------------------------------------------
 CHAT = "CHAT"
 DM = "DM"
 CHAT_HISTORY = "CHAT_HISTORY"

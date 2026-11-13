@@ -1,4 +1,3 @@
-# OWNER: P2
 """render_draw.py: Renderers for stroke, line, arrow, rect and ellipse objects.
 
 Contract sections F and G. One function per kind, registered with

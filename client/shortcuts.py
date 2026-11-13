@@ -1,4 +1,3 @@
-# OWNER: P2
 """shortcuts.py: Keyboard shortcuts, the AutoCAD-style command bar and the shortcut help.
 
 Everything here plugs in through the registries (contract G):
@@ -33,7 +32,7 @@ Ctrl+Z  Ctrl+Y  send UNDO / REDO {} through send_op. There is NO undo
                 we do not even send it for a viewer.
 /               open the command bar
 F1              Help > Keyboard shortcuts
-Ctrl+S and Ctrl+E are NOT bound here: P3 registers them (export).
+Ctrl+S and Ctrl+E are NOT bound here: Janith registers them (export).
 
 Plain keys never steal typing: when a text field (chat, the command bar)
 has focus, Qt first offers the key to that field (ShortcutOverride), and a
@@ -837,7 +836,7 @@ def _help_html():
     for title, rows in _BUILTIN_HELP:
         parts.append(table(title, rows))
 
-    # Everything other modules registered (e.g. P3's Ctrl+S / Ctrl+E).
+    # Everything other modules registered (e.g. Janith's Ctrl+S / Ctrl+E).
     others = [(e["keyseq"], _first_line(e["fn"])) for e in registry.SHORTCUTS
               if e["fn"] not in _OWN_FNS and e["keyseq"] not in ("Delete", "Backspace", "Ctrl+A")]
     others += [(e["shortcut"], "%s > %s" % (e["menu"], e["label"])) for e in registry.MENU_ACTIONS

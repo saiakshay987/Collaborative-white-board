@@ -1,4 +1,3 @@
-# OWNER: P1
 """app_state.py: AppState, the one shared object every client module receives as `app`.
 
 Contract section F (client). It holds references to the main parts of the
@@ -7,9 +6,9 @@ client so modules never import each other just to find them:
     app.net          NetClient
     app.me           Me: username, role, color, room, token
     app.users        list of {name, color, role, online} from USER_LIST
-    app.board        BoardModel (P3)
-    app.canvas       CanvasWidget (P2)
-    app.window       MainWindow (P4)
+    app.board        BoardModel (Janith)
+    app.canvas       CanvasWidget (Akshay)
+    app.window       MainWindow (Harshith)
     app.pen          dict: color, width, tool, alpha
     app.active_tool  current tool instance
     app.toast(text)  short fading notification in the window corner (client/toasts.py)

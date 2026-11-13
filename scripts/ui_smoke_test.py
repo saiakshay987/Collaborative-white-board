@@ -1,4 +1,3 @@
-# OWNER: P1
 """ui_smoke_test.py: Build the real client UI offscreen, check the layout and save screenshots.
 
     python scripts/ui_smoke_test.py
@@ -486,7 +485,7 @@ def phase5_checks(qapp, app, window, check, shoot, suffix):
                      or (isinstance(btn, QToolButton)
                          and btn.toolButtonStyle() == Qt.ToolButtonIconOnly))
         if btn.objectName() == "formatToggle":
-            want = theme.ICON_TEXT                   # fixed 26 x 24 by P2, matches B / I / U
+            want = theme.ICON_TEXT                   # fixed 26 x 24 by Akshay, matches B / I / U
         else:
             want = theme.ICON_SIZE if icon_only else theme.ICON_TEXT
         got = btn.iconSize().width()

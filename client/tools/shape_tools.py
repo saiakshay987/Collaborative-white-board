@@ -1,4 +1,3 @@
-# OWNER: P2
 """shape_tools.py: Line, arrow, rectangle and ellipse tools.
 
 Four tools, registered with registry.register_tool (contract F and G):

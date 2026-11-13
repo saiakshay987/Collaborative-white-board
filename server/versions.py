@@ -1,4 +1,3 @@
-# OWNER: P3
 """versions.py: Version history (contract C3) and autosave to disk (contract E6 and E7).
 
 Three jobs live in this file.
@@ -388,7 +387,7 @@ def room_extras(room):
     members is room.profiles overlaid with the seats that exist right now,
     because a profile is only refreshed when a seat goes away and the host may
     have changed an online member's role with SET_ROLE since. auth is the salted
-    hash kept by rooms.Room (P1) and the chat is the ChatLog of chat.py (P4);
+    hash kept by rooms.Room (Sharwan) and the chat is the ChatLog of chat.py (Harshith);
     both are read through the few attributes named here so that only this
     function (and apply_extras) knows their layout.
     """
@@ -908,6 +907,6 @@ def stop():
 atexit.register(save_all)
 
 # Start when the module is imported: server/bootstrap.py does that before the
-# server accepts connections, and P3 owns no file that runs later. If P1 ever
-# adds a "server started" call, versions.start() can move there.
+# server accepts connections, and no file runs later. If a "server started" call is
+# ever added, versions.start() can move there.
 start()

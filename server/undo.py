@@ -1,4 +1,3 @@
-# OWNER: P3
 """undo.py: Per-user undo/redo (CONTRACT section E6).
 
 UNDO reverts only the sender's own most recent undoable action (add or

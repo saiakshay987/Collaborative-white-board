@@ -1,4 +1,3 @@
-# OWNER: P1
 # -*- mode: python ; coding: utf-8 -*-
 """WhiteboardClient-console.spec: the client WITH a console window, for debugging.
 

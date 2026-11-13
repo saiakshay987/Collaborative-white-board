@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_history_panel.py: Tests for client/history_panel.py (version list, buttons, footer, Ctrl+S).
 
 Run from the project root:  python scripts/test_history_panel.py

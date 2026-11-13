@@ -1,4 +1,3 @@
-# OWNER: P3
 """assets.py: The picture store of a room: IMG_BEGIN / IMG_CHUNK / IMG_END uploads and ASSET_GET downloads (contract C3).
 
 A board object of kind 'image' only names its picture (asset_id, see common/kinds_image.py, which also explains

@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_export.py: Tests for client/export.py (JSON save/load, PNG and PDF export).
 
 Run from the project root:  python scripts/test_export.py

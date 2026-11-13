@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_versions.py: Tests for the version history (server/versions.py): VERSION_SAVE / LIST / RESTORE,
 the periodic version and the version files on disk.
 

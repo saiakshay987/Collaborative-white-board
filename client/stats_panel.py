@@ -1,4 +1,3 @@
-# OWNER: P1
 """stats_panel.py: Dock panel showing live RTT per user and the traffic counters.
 
 Two data sources, both read on the GUI thread only:
@@ -21,7 +20,7 @@ messages per second) painted with QPainter. RTT is colored green below
 20 ms, amber below 100 ms and red above, in the theme's colours
 (client/theme.py), so it stays readable in light and dark. The numbers sit
 in four metric tiles: My RTT, In, Out and Server. "Copy stats" puts a one-line
-summary on the clipboard for the report (e.g. P2's batching comparison:
+summary on the clipboard for the report (e.g. Akshay's batching comparison:
 draw with draw_sync.BATCHING True and False and compare "out msg/s").
 """
 

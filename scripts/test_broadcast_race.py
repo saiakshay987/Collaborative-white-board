@@ -1,4 +1,3 @@
-# OWNER: P1
 """test_broadcast_race.py: Stress test for the room.broadcast / send_to race.
 
 Run from the project root (no server needed, no sockets are opened):

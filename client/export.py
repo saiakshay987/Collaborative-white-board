@@ -1,4 +1,3 @@
-# OWNER: P3
 """export.py: Export the board as JSON, PNG or PDF, and load a JSON file back (CONTRACT section F).
 
     File > Save board as JSON    every object of the board, written to a file you choose.

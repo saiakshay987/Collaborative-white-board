@@ -1,4 +1,3 @@
-# OWNER: P1
 """check_lan.py: Can this PC open a TCP connection to the whiteboard server?
 
     python scripts/check_lan.py <ip> [port]

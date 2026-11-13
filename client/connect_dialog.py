@@ -1,4 +1,3 @@
-# OWNER: P1
 """connect_dialog.py: The dialog shown at start-up: host a new room or join one.
 
 Two tabs:

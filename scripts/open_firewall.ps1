@@ -1,4 +1,3 @@
-# OWNER: P1
 # open_firewall.ps1: let other laptops reach the whiteboard server.
 #
 # Run in an ADMINISTRATOR PowerShell on the SERVER laptop:

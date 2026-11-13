@@ -1,4 +1,3 @@
-# OWNER: P1
 """users_panel.py: Dock panel listing the room's users (registered with register_panel).
 
 One row per entry of app.users (filled from JOIN_OK and USER_LIST by
@@ -15,7 +14,7 @@ users (inside the 120 s rejoin window) are drawn faded with "offline"
 instead of an RTT. The panel is only as tall as its rows (preferred_height),
 which client/shell.py uses to size the Users dock above Chat.
 
-Double-clicking another user emits app.dm_requested(name), which P4's chat
+Double-clicking another user emits app.dm_requested(name), which Harshith's chat
 panel uses to open a direct-message conversation. Right-click on a user opens
 a context menu: "Send direct message", and, only when I am the host, "Kick"
 (after a confirmation it sends KICK {user}; the server checks the role

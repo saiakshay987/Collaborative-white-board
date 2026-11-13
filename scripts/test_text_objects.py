@@ -1,4 +1,3 @@
-# OWNER: P4
 """test_text_objects.py: tests for text and sticky objects: kinds_text, render_text and text_tool.
 
 Run from the project root with either
@@ -19,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt5.QtCore import QObject, QPoint, QPointF, QSettings, Qt, pyqtSignal  # noqa: E402
-from PyQt5.QtGui import QColor, QImage, QPainter  # noqa: E402
+from PyQt5.QtGui import QColor, QFontDatabase, QImage, QPainter  # noqa: E402
 from PyQt5.QtTest import QTest  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
@@ -133,8 +132,14 @@ class RenderTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        """Make sure a QApplication exists (fonts need one)."""
+        """Make sure a QApplication exists (fonts need one) and note whether any font exists."""
         cls.qapp = QApplication.instance() or QApplication([])
+        cls.has_fonts = bool(QFontDatabase().families())
+
+    def need_fonts(self):
+        """Skip the calling test when this Qt platform has no fonts (text would paint nothing)."""
+        if not self.has_fonts:
+            self.skipTest("no fonts on this Qt platform")
 
     def test_renderers_are_registered(self):
         """Both kinds have a renderer in the registry."""
@@ -143,6 +148,7 @@ class RenderTest(unittest.TestCase):
 
     def test_text_is_painted_inside_its_box_only(self):
         """Long text paints pixels in the box and none outside it (clipped to the box)."""
+        self.need_fonts()
         obj = make(x=50, y=50, w=120, h=40, size=20, text="A long text that has to wrap and be cut. " * 6)
         image = render_image([obj])
         self.assertGreater(non_white(image, 50, 50, 170, 90), 50)
@@ -152,6 +158,7 @@ class RenderTest(unittest.TestCase):
 
     def test_long_word_is_broken_inside_the_box(self):
         """A word longer than the box does not overflow to the right."""
+        self.need_fonts()
         obj = make(x=50, y=50, w=80, h=100, size=16, text="Supercalifragilisticexpialidocious")
         image = render_image([obj])
         self.assertGreater(non_white(image, 50, 50, 130, 150), 50)
@@ -168,6 +175,7 @@ class RenderTest(unittest.TestCase):
 
     def test_sticky_text_is_dark(self):
         """Text on a sticky is dark even on a dark-ish background."""
+        self.need_fonts()
         obj = make("sticky", x=50, y=50, w=200, h=160, text="MMMMMMMM", color="#fff176", size=40)
         image = render_image([obj])
         darkest = min(QColor(image.pixel(x, y)).lightness()
@@ -390,7 +398,7 @@ class ToolTest(unittest.TestCase):
         self.assertEqual((sticky["kind"], sticky["w"], sticky["h"], sticky["size"]), ("sticky", 200, 160, 16))
         self.assertEqual(kinds_text.validate(sticky), (True, ""))
 
-    # -- double-click editing with P2's select tool --------------------------------------
+    # -- double-click editing with Akshay's select tool --------------------------------------
     def test_double_click_edits_text_and_sends_op_update(self):
         """Double-click opens the editor with the text; a change sends OP_UPDATE {obj_id, set:{text}}."""
         text_id = self.add_text_via_tool("Hello")
@@ -444,7 +452,7 @@ class ToolTest(unittest.TestCase):
         """Switch to the select tool and click board point (x, y) so obj_id is selected."""
         self.window.select_tool("select")
         self.click(x, y)
-        self.assertEqual(self.app.active_tool.selected_id, obj_id)
+        self.assertEqual(self.app.active_tool.selected_ids, [obj_id])
 
     def test_format_bar_visibility(self):
         """Hidden for the pen, shown for the text and sticky tools; the sticky also has the palette."""

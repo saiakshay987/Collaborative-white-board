@@ -1,5 +1,4 @@
 @echo off
-rem OWNER: P1
 rem build.bat: build the Windows executables WhiteboardServer.exe, WhiteboardClient.exe
 rem and WhiteboardClient-console.exe into dist\windows\.
 rem

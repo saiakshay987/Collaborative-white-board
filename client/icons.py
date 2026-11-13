@@ -1,4 +1,3 @@
-# OWNER: P1
 """icons.py: Every icon of the client, painted in code with QPainter (no image files).
 
 Why painted: the client ships as a PyInstaller one-file executable and must

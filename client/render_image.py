@@ -1,4 +1,3 @@
-# OWNER: P3
 """render_image.py: Renderer for image objects: the picture, or a grey placeholder while it is not there.
 
 registry.register_renderer('image', render_image), called by render.render_board for every object of kind 'image'

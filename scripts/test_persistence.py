@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_persistence.py: Tests for 'before clear' versions and autosave/restore (server/versions.py).
 
 Run from the project root:  python scripts/test_persistence.py

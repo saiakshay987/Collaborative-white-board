@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_assets.py: Tests for server/assets.py (IMG_* upload, ASSET_GET, quotas, persistence) and the image rules of board_ops.
 
 Run from the project root:  python scripts/test_assets.py

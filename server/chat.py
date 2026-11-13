@@ -1,4 +1,3 @@
-# OWNER: P4
 """chat.py: Room chat and direct messages, CHAT_HISTORY on join, SET_ROLE handler.
 
 Contract sections C4 and E. This file holds:
@@ -23,7 +22,7 @@ from server.dispatcher import handler
 MAX_CHAT_CHARS = 1000
 
 # Roles a member can have (contract C4). Kept local so this module only
-# depends on the dispatcher/presence APIs of P1, not on rooms internals.
+# depends on the dispatcher/presence APIs of Sharwan, not on rooms internals.
 VALID_ROLES = frozenset(["host", "editor", "viewer"])
 
 

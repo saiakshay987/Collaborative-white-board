@@ -1,4 +1,3 @@
-# OWNER: P2
 """toolbar.py: Tool dock built from the tools registry, plus color/width controls with per-tool memory.
 
 Registered with registry.register_panel as the "tools" panel in the LEFT
@@ -832,7 +831,7 @@ class ToolDock(QWidget):
             self.select_tool(self._last_tool_id)
 
 
-# The dock built by make_tool_dock (main_window builds it once), so other P2
+# The dock built by make_tool_dock (main_window builds it once), so other draw-tool
 # code (the command bar in shortcuts.py) can change the pen through it.
 _dock = None
 

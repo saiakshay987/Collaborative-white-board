@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# OWNER: P1
 # build.sh: build the Linux executables WhiteboardServer, WhiteboardClient and
 # WhiteboardClient-console into dist/linux/.
 #

@@ -1,4 +1,3 @@
-# OWNER: P1
 """presence.py: Session and presence messages: CREATE_ROOM, JOIN_ROOM, LEAVE, USER_LIST,
 USER_JOINED and USER_LEFT (contract C1, section F).
 
@@ -11,9 +10,9 @@ or other join can slip in between):
                                    rooms.member_joined() runs the hooks in
                                    bootstrap order:
                              <---    USER_LIST (to all)   (this module)
-                             <---    SNAPSHOT / SYNC_DELTA  (P3, sync.py)
-                             <---    CHAT_HISTORY           (P4, chat.py)
-                             <---    VERSIONS               (P3, registered last by bootstrap.py)
+                             <---    SNAPSHOT / SYNC_DELTA  (Janith, sync.py)
+                             <---    CHAT_HISTORY           (Harshith, chat.py)
+                             <---    VERSIONS               (Janith, registered last by bootstrap.py)
     other clients            <---  USER_JOINED {name, color}, USER_LIST
 
 Leaving: a LEAVE message removes the seat (reason "leave"). A dropped TCP
@@ -113,7 +112,7 @@ def broadcast_user_list(room):
 def _announce_join(room, member, rejoin, last_seq):
     """Hook: tell the others someone (re)joined, then send USER_LIST to all.
 
-    Registered first (bootstrap imports presence before P3/P4), so the
+    Registered first (bootstrap imports presence before the board and chat modules), so the
     joiner gets USER_LIST before SNAPSHOT and CHAT_HISTORY. The joiner
     already got JOIN_OK, so USER_JOINED goes only to the others.
     """

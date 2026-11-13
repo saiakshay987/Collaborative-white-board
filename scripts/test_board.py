@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_board.py: Unit tests for server/board_state.py, server/undo.py, server/board_ops.py and server/sync.py.
 
 Run from the project root:  python scripts/test_board.py
@@ -552,8 +551,8 @@ import threading  # noqa: E402
 from common import models  # noqa: E402
 from server import board_ops, dispatcher, permissions, rooms, sync, versions  # noqa: E402,F401
 
-# The real kinds_*.py registries belong to P2/P4 and may still be empty
-# stubs, so the tests bring their own tiny registry for the kinds they use.
+# The real kinds_*.py registries belong to the draw and text modules and may
+# change, so the tests bring their own tiny registry for the kinds they use.
 TEST_KINDS = {
     'rect': {'required': {'x': float, 'y': float, 'w': float, 'h': float, 'color': str,
                           'width': float, 'fill': (str, type(None))},
@@ -562,7 +561,7 @@ TEST_KINDS = {
                'defaults': {}},
 }
 
-# The contract C4 table (the real permissions.py is P4's).
+# The contract C4 table (the real permissions.py is Harshith's).
 ALLOWED = {'host': {'draw', 'undo', 'upload', 'version_save', 'chat', 'cursor',
                     'clear', 'version_restore', 'version_delete', 'version_rename', 'set_role', 'kick'},
            'editor': {'draw', 'undo', 'upload', 'version_save', 'chat', 'cursor'},

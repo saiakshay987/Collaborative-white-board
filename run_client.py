@@ -1,4 +1,3 @@
-# OWNER: P1
 """run_client.py: Entry point: starts the whiteboard client.
 
 Imports client.bootstrap (every module registers itself), creates the
@@ -54,7 +53,7 @@ def wire_status(app, window):
 def build_window(app):
     """Build the main window for app and make it ready to show.
 
-    MainWindow (P4) builds everything from the registries; wire_status adds
+    MainWindow (Harshith) builds everything from the registries; wire_status adds
     the connection pill and toasts; shell.install arranges the window (top
     bar, compact tool rail, docks, status pills, saved layout) and
     cursor_overlay.install puts the live cursors over the canvas (it needs

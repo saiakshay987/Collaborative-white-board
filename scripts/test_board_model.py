@@ -1,4 +1,3 @@
-# OWNER: P3
 """test_board_model.py: Unit tests for client/board_model.py (contract E2, E3).
 
 Run from the project root:  python scripts/test_board_model.py

@@ -1,4 +1,3 @@
-# OWNER: P1
 """exe_smoke_test.py: Smoke test of the BUILT executables (not the Python sources).
 
     python scripts/exe_smoke_test.py [--dist dist/linux] [--port 5998] [--client-seconds 5]

@@ -1,4 +1,3 @@
-# OWNER: P1
 # -*- mode: python ; coding: utf-8 -*-
 """WhiteboardServer.spec: PyInstaller recipe for the server executable.
 

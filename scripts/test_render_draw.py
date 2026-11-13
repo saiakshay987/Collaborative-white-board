@@ -1,4 +1,3 @@
-# OWNER: P2
 """test_render_draw.py: Offline test for common/kinds_draw.py and client/render_draw.py.
 
 Run from the project root:  python scripts/test_render_draw.py
@@ -38,27 +37,27 @@ def wave(x0, y0, length, amp, n=60):
 def good_objects():
     """Build one valid object of every kind; z gives the paint order."""
     return [
-        {"id": "p2-1", "kind": "rect", "x": 40, "y": 40, "w": 200, "h": 120,
+        {"id": "obj-1", "kind": "rect", "x": 40, "y": 40, "w": 200, "h": 120,
          "color": "#4363d8", "width": 4, "fill": None, "z": 1},
-        {"id": "p2-2", "kind": "rect", "x": 280, "y": 40, "w": 200, "h": 120,
+        {"id": "obj-2", "kind": "rect", "x": 280, "y": 40, "w": 200, "h": 120,
          "color": "#000000", "width": 2, "fill": "#ffe08a", "z": 2},
-        {"id": "p2-3", "kind": "ellipse", "x": 520, "y": 40, "w": 200, "h": 120,
+        {"id": "obj-3", "kind": "ellipse", "x": 520, "y": 40, "w": 200, "h": 120,
          "color": "#e6194b", "width": 6, "z": 3},  # fill missing: default None
-        {"id": "p2-4", "kind": "ellipse", "x": 760, "y": 40, "w": 120, "h": 120,
+        {"id": "obj-4", "kind": "ellipse", "x": 760, "y": 40, "w": 120, "h": 120,
          "color": "#3cb44b", "width": 3, "fill": "#c8f0c8", "z": 4},
-        {"id": "p2-5", "kind": "line", "x1": 40, "y1": 220, "x2": 440, "y2": 260,
+        {"id": "obj-5", "kind": "line", "x1": 40, "y1": 220, "x2": 440, "y2": 260,
          "color": "#911eb4", "width": 5, "z": 5},
-        {"id": "p2-6", "kind": "arrow", "x1": 480, "y1": 300, "x2": 860, "y2": 200,
+        {"id": "obj-6", "kind": "arrow", "x1": 480, "y1": 300, "x2": 860, "y2": 200,
          "color": "#f58231", "width": 4, "z": 6},
-        {"id": "p2-7", "kind": "arrow", "x1": 860, "y1": 320, "x2": 500, "y2": 340,
+        {"id": "obj-7", "kind": "arrow", "x1": 860, "y1": 320, "x2": 500, "y2": 340,
          "color": "#008080", "width": 12, "z": 7},
-        {"id": "p2-8", "kind": "stroke", "tool": "pen", "color": "#000000", "width": 3,
+        {"id": "obj-8", "kind": "stroke", "tool": "pen", "color": "#000000", "width": 3,
          "alpha": 1.0, "points": wave(40, 400, 360, 30), "z": 8},
-        {"id": "p2-9", "kind": "stroke", "tool": "marker", "color": "#e6194b", "width": 12,
+        {"id": "obj-9", "kind": "stroke", "tool": "marker", "color": "#e6194b", "width": 12,
          "alpha": 0.8, "points": wave(40, 480, 360, 30), "z": 9},
-        {"id": "p2-10", "kind": "stroke", "tool": "highlighter", "color": "#ffd800",
+        {"id": "obj-10", "kind": "stroke", "tool": "highlighter", "color": "#ffd800",
          "width": 30, "alpha": 0.4, "points": [[30, 400], [420, 470]], "z": 10},
-        {"id": "p2-11", "kind": "stroke", "points": [[600, 450]], "width": 20,
+        {"id": "obj-11", "kind": "stroke", "points": [[600, 450]], "width": 20,
          "color": "#4363d8", "z": 11},  # one point = dot; tool/alpha defaults
     ]
 

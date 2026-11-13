@@ -1,10 +1,9 @@
-# OWNER: P1
 """test_message_limits.py: Tests for the optional "limits" in KINDS (contract rev 3).
 
 Run from the project root:  python scripts/test_message_limits.py
 
 Test-only kinds are added to models.KINDS for the run (and removed after),
-so this does not depend on the limits P2/P3/P4 put in their kinds files.
+so this does not depend on the limits the other modules put in their kinds files.
 
 Checks:
   1. In-range numbers and string lengths pass.

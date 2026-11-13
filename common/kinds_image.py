@@ -1,4 +1,3 @@
-# OWNER: P3
 """kinds_image.py: KINDS registry for image objects, and the constants of the image transfer (contract C3 and D).
 
 Contract section D:   image   {x, y, w, h, asset_id}   (x, y, w, h in board units; asset_id names the picture)

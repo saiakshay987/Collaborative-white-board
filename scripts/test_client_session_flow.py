@@ -1,4 +1,3 @@
-# OWNER: P1
 """test_client_session_flow.py: The real Qt client leaves a room and joins it again.
 
 Run from the project root (no display needed):  python scripts/test_client_session_flow.py
@@ -31,6 +30,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["WB_DATA_DIR"] = tempfile.mkdtemp(prefix="wb_flow_")  # before server.versions loads
 
+from PyQt5.QtCore import QObject  # noqa: E402
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 import server.bootstrap  # noqa: E402,F401
@@ -74,14 +74,20 @@ def chat_texts(app):
     return [m["text"] for m in chat_panel._panel._views[chat_panel.ROOM_KEY]._messages]
 
 
-class FakeDialog:
-    """Stands in for ConnectDialog: records its arguments and the client's state, then accepts."""
+class FakeDialog(QObject):
+    """Stands in for ConnectDialog: records its arguments and the client's state, then accepts.
+
+    It is a QObject (not a plain class) because run_client passes the dialog to
+    theme.decorate_widgets, which calls setProperty/findChildren on it. Without these
+    methods the AttributeError escaped a QTimer slot and PyQt5 aborted the process.
+    """
 
     ACCEPT = True
     app = None
 
     def __init__(self, app, parent=None, notice=None, prefill=None):
         """Remember what the real dialog would have shown."""
+        super().__init__()
         app_ = FakeDialog.app
         from client import chat_panel
         panel = chat_panel._panel

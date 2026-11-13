@@ -1,4 +1,3 @@
-# OWNER: P1
 """test_rejoin.py: End-to-end test of leaving a room and joining it again.
 
 Run from the project root:  python scripts/test_rejoin.py

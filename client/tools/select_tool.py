@@ -1,4 +1,3 @@
-# OWNER: P2
 """select_tool.py: Select tool: select (one or many), move, resize, delete, nudge and double-click editing through register_editor.
 
 SelectTool ('select', V), registered with registry.register_tool.
@@ -29,7 +28,7 @@ Escape         during a drag: put the object back where it was (single
                preview (group, nothing was sent); otherwise clear the
                selection.
 double-click   calls the editor registered with register_editor for the
-               object's kind (P4 registers text and sticky), as
+               object's kind (Harshith registers text and sticky), as
                fn(app, canvas, obj).
 
 The selection is a list of object ids (selected_ids). With one object it

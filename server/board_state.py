@@ -1,4 +1,3 @@
-# OWNER: P3
 """board_state.py: Server-side board state of ONE room (CONTRACT sections C2, C3, D, E).
 
 BoardState keeps the ordered objects, the seq counter and the log of accepted

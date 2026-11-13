@@ -1,4 +1,3 @@
-# OWNER: P1
 """test_framing.py: Stress test for common/framing.py over a local socket pair.
 
 Run from the project root:  python scripts/test_framing.py
