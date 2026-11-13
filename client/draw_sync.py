@@ -23,6 +23,12 @@ points and sends them in parts:
 40 ms means at most 25 parts per second per drawing user, which still looks
 live to the others (a film is 24 frames per second).
 
+Batching matters for network traffic. Without batching, every mouse move is
+one packet, which was about 124 packets per second while drawing. With
+batching it was about 22 packets per second, measured with the traffic panel
+from P1 (framing.STATS, a 5 s scribble with a 125 Hz mouse). The cost is at
+most 40 milliseconds of extra delay, which nobody can see.
+
 Set BATCHING = False to send one part per mouse move instead (debug/demo
 mode, to compare packet counts in the stats panel or on the console).
 
