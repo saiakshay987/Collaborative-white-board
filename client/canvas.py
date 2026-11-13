@@ -45,25 +45,16 @@ The page is the rectangle 0..BOARD_W x 0..BOARD_H and nothing may leave it:
 
 The server enforces the same rule on what it accepts (common/kinds_*.py),
 because a client can never be trusted to have clamped anything.
-
-The look (infinite canvas)
---------------------------
-On screen the board has no frame: the whole view is the board's white
-background (the same white an export has), with a subtle dot grid that
-moves with pan and zoom. Panning is free but clamped to the page plus a
-margin, so the drawing can never be lost; fit_page() and fit_content()
-bring it back into view. The page rule above is unchanged: past the page
-edge the pointer shows "not allowed" and nothing can be drawn there.
 """
 
 import math
 import traceback
 
-from PyQt5.QtCore import QLineF, QPointF, QRectF, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QCursor, QPainter, QPen, QPixmap, QPolygonF
+from PyQt5.QtCore import QLineF, QPointF, QRectF, QSizeF, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QCursor, QPainter, QPen
 from PyQt5.QtWidgets import QLabel, QWidget
 
-from client import render
+from client import render, theme
 from common import config
 
 # Zoom limits and the zoom change per wheel notch (120 angle-delta units).
@@ -71,23 +62,11 @@ MIN_ZOOM = 0.1
 MAX_ZOOM = 8.0
 ZOOM_STEP = 1.15
 
-# Colors of the board background (the whole view, like an export), its line grid and the dots.
+# Colors of the background outside the page, the page and its grid.
+OUTSIDE_COLOR = QColor("#d6d6d6")   # fallback; the surround comes from theme.tokens()["surround"]
 PAGE_COLOR = QColor("#ffffff")
+PAGE_BORDER_COLOR = QColor("#616161")
 GRID_COLOR = QColor("#ececec")
-DOT_COLOR = QColor("#cfd4dc")
-
-# Dot grid: one dot every grid_size board units, doubled until the dots are at
-# least DOT_MIN_PX screen pixels apart, so it never gets dense when zoomed out.
-DOT_MIN_PX = 16
-DOT_PX = 1.6              # dot diameter in screen pixels
-
-# Panning keeps the view on the page: it may go at most PAN_MARGIN_PX past an
-# edge (or PAN_MARGIN_FRAC of the view, if that is more).
-PAN_MARGIN_PX = 160
-PAN_MARGIN_FRAC = 0.25
-
-# fit_content() never zooms in further than this on a small drawing.
-FIT_CONTENT_MAX_ZOOM = 2.0
 
 # Grid lines closer than this on screen (pixels) are skipped: they would only
 # grey out the page and cost time when zoomed far out.
@@ -99,6 +78,17 @@ CULL_MARGIN = 30.0
 
 # Margin (pixels) left around the page by fit_page().
 FIT_MARGIN = 20
+
+# Soft shadow under the page: SHADOW_STEPS translucent rectangles, each
+# SHADOW_GROW pixels bigger than the previous one, shifted by SHADOW_SHIFT
+# (right, down), so the edge fades out. Alpha is per rectangle and adds up.
+SHADOW_STEPS = 7
+SHADOW_GROW = 1.6
+SHADOW_SHIFT = (2.0, 3.0)
+SHADOW_ALPHA = 13
+
+# Width (pixels) of the page border line.
+BORDER_PX = 2
 
 
 # ------------------------------------------------------------ the page rule
@@ -249,8 +239,6 @@ class CanvasWidget(QWidget):
         self._forbidden = False      # the "not allowed" cursor is shown (pointer off the page)
         self._bounds_cache = {}      # obj_id -> QRectF (or None) for culling
         self._fitted = False         # fit_page() already ran once on first show
-        self._dots_key = None        # (spacing, phase, size, ratio) of the cached dot layer
-        self._dots_pix = None        # the dot grid as a transparent pixmap of the view
 
         # Hover moves must arrive too (for cursor_moved), not only drags.
         self.setMouseTracking(True)
@@ -332,50 +320,11 @@ class CanvasWidget(QWidget):
         self.zoom = zoom
         self.offset = QPointF(anchor.x() - before.x() * zoom,
                               anchor.y() - before.y() * zoom)
-        self._clamp_offset()
         self.update()
 
     def pan_by(self, dx, dy):
-        """Move the view by (dx, dy) screen pixels (kept on the page, see _clamp_offset)."""
+        """Move the view by (dx, dy) screen pixels."""
         self.offset = QPointF(self.offset.x() + dx, self.offset.y() + dy)
-        self._clamp_offset()
-        self.update()
-
-    def _clamp_offset(self):
-        """Keep the page in view: at most a margin of empty space past any page edge.
-
-        Per axis, with the page b screen pixels long and the view v long, the
-        page's start may lie between v - margin - b and margin. When the page
-        is smaller than the view (zoomed out) the same formula keeps it fully
-        inside, `margin` away from the edges at most.
-        """
-        out = []
-        for value, view, size in ((self.offset.x(), self.width(), config.BOARD_W),
-                                  (self.offset.y(), self.height(), config.BOARD_H)):
-            margin = max(PAN_MARGIN_PX, PAN_MARGIN_FRAC * view)
-            a, b = view - margin - size * self.zoom, margin
-            out.append(max(min(a, b), min(max(a, b), value)))
-        self.offset = QPointF(out[0], out[1])
-
-    def fit_content(self):
-        """Zoom and centre on everything drawn (the whole page when the board is empty)."""
-        board = getattr(self.app, "board", None)
-        rect = None
-        for obj in (board.objects.values() if board is not None else ()):
-            bounds = object_bounds(obj)
-            if bounds is not None:
-                rect = bounds if rect is None else rect.united(bounds)
-        if rect is None or rect.isEmpty():
-            self.fit_page()
-            return
-        rect = rect.adjusted(-CULL_MARGIN, -CULL_MARGIN, CULL_MARGIN, CULL_MARGIN)
-        w = max(1, self.width() - 2 * FIT_MARGIN)
-        h = max(1, self.height() - 2 * FIT_MARGIN)
-        self.zoom = max(MIN_ZOOM, min(FIT_CONTENT_MAX_ZOOM, w / rect.width(), h / rect.height()))
-        centre = rect.center()
-        self.offset = QPointF(self.width() / 2.0 - centre.x() * self.zoom,
-                              self.height() / 2.0 - centre.y() * self.zoom)
-        self._clamp_offset()
         self.update()
 
     def fit_page(self):
@@ -426,14 +375,9 @@ class CanvasWidget(QWidget):
             self.fit_page()
             self._show_snap_status()
 
-    def resizeEvent(self, ev):
-        """Keep the page in view when the canvas changes size (panels shown or hidden)."""
-        super().resizeEvent(ev)
-        self._clamp_offset()
-
     # --------------------------------------------------------------- painting
     def paintEvent(self, ev):
-        """Paint the white board background and its dot grid, the line grid, then the board objects.
+        """Paint the grey surround, the white page, the grid, then the board objects.
 
         The painter is given the zoom/pan transform once, so everything
         after that (grid and every renderer) works in board units. Only
@@ -442,9 +386,8 @@ class CanvasWidget(QWidget):
         """
         painter = QPainter(self)
         try:
-            # The whole view is the board's background: white, like an export.
-            painter.fillRect(self.rect(), PAGE_COLOR)
-            self._paint_dots(painter)             # in screen pixels, before the transform
+            painter.fillRect(self.rect(), QColor(theme.tokens()["surround"]))   # follows light/dark
+            self._paint_page_shadow(painter)      # in screen pixels, before the transform
 
             # screen = board * zoom + offset
             painter.translate(self.offset)
@@ -452,6 +395,7 @@ class CanvasWidget(QWidget):
 
             page = page_rect()
             visible = self.visible_board_rect()
+            painter.fillRect(page, PAGE_COLOR)
             if self.show_grid:
                 self._paint_grid(painter, page.intersected(visible))
 
@@ -466,50 +410,32 @@ class CanvasWidget(QWidget):
                 render.render_board(painter, objects, ctx)
                 painter.restore()
 
+            # The border goes on top of the objects so ink at the edge never hides it.
+            border = QPen(PAGE_BORDER_COLOR)
+            border.setWidth(BORDER_PX)
+            border.setCosmetic(True)  # BORDER_PX screen pixels whatever the zoom
+            painter.setPen(border)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(page)
             self._paint_tool_overlay(painter)
         finally:
             painter.end()
 
-    def _paint_dots(self, painter):
-        """Draw the dot grid over the whole view, in screen pixels (painter not transformed yet).
+    def _paint_page_shadow(self, painter):
+        """Draw a soft drop shadow around the page, in screen pixels (painter not transformed yet).
 
-        Dots sit on multiples of the grid spacing in board units, so they move
-        with pan and zoom; the spacing doubles while dots would be closer than
-        DOT_MIN_PX. The dots are drawn once into a pixmap of the view and that
-        pixmap is reused until the spacing, the pan phase or the size changes,
-        so the many repaints while drawing only copy it (about half a millisecond).
+        Several nearly transparent rectangles of growing size are stacked;
+        where they overlap the shadow is darkest (next to the page) and it
+        fades to nothing outwards. The page is painted over the middle.
         """
-        step = self.grid_size if self.grid_size > 0 else float(config.GRID)
-        while step * self.zoom < DOT_MIN_PX:
-            step *= 2
-        px = step * self.zoom
-        first = self.screen_to_board(QPointF(0, 0))
-        x0 = math.floor(first.x() / step) * step * self.zoom + self.offset.x()
-        y0 = math.floor(first.y() / step) * step * self.zoom + self.offset.y()
-        ratio = self.devicePixelRatioF()
-        key = (round(px, 3), round(x0, 1), round(y0, 1), self.width(), self.height(), ratio)
-        if key != self._dots_key:
-            pix = QPixmap(max(1, int(self.width() * ratio)), max(1, int(self.height() * ratio)))
-            pix.setDevicePixelRatio(ratio)
-            pix.fill(Qt.transparent)
-            cols = int(self.width() / px) + 2
-            rows = int(self.height() / px) + 2
-            row = QPolygonF([QPointF(x0 + i * px, 0.0) for i in range(cols)])
-            pen = QPen(DOT_COLOR, DOT_PX)
-            pen.setCapStyle(Qt.RoundCap)
-            dots = QPainter(pix)
-            try:
-                dots.setRenderHint(QPainter.Antialiasing, True)
-                dots.setPen(pen)
-                for j in range(rows):         # one row of points, moved down row by row
-                    dots.save()
-                    dots.translate(0.0, y0 + j * px)
-                    dots.drawPoints(row)
-                    dots.restore()
-            finally:
-                dots.end()
-            self._dots_key, self._dots_pix = key, pix
-        painter.drawPixmap(0, 0, self._dots_pix)
+        top_left = self.board_to_screen(QPointF(0, 0))
+        base = QRectF(top_left, QSizeF(config.BOARD_W * self.zoom, config.BOARD_H * self.zoom))
+        base.translate(SHADOW_SHIFT[0], SHADOW_SHIFT[1])
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, SHADOW_ALPHA))
+        for i in range(1, SHADOW_STEPS + 1):
+            grow = i * SHADOW_GROW
+            painter.drawRect(base.adjusted(-grow, -grow, grow, grow))
 
     def _paint_tool_overlay(self, painter):
         """Let the active tool draw local-only feedback on top of the board.
@@ -618,7 +544,7 @@ class CanvasWidget(QWidget):
         return tool is not None and getattr(tool, "group", None) != "select"
 
     def _update_page_cursor(self, ev):
-        """Show the "not allowed" cursor while a drawing tool is past the edge of the page.
+        """Show the "not allowed" cursor while a drawing tool is over the grey area outside the page.
 
         Back on the page the tool's own cursor returns. Space-panning shows
         its hand cursor everywhere, so it is left alone here.

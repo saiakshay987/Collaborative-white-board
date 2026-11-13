@@ -177,20 +177,6 @@ class TopBar(QToolBar):
         self.chip = ConnectionChip(app.net) if app.net is not None else _pill("No server")
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # Zoom: out, the percentage (click: 100 %), in, fit to the drawing. The same
-        # functions as the -, 0 and + keys (shortcuts.py) and canvas.fit_content().
-        self.zoom_out_btn = _icon_button("zoom_out", "Zoom out (-)", lambda: shortcuts.zoom_out(app))
-        self.zoom_pct = QToolButton()
-        self.zoom_pct.setObjectName("zoomPercent")
-        self.zoom_pct.setAutoRaise(True)
-        self.zoom_pct.setToolTip("Zoom level: click for 100 % (0)")
-        self.zoom_pct.clicked.connect(lambda: shortcuts.zoom_reset(app))
-        self.zoom_in_btn = _icon_button("zoom_in", "Zoom in (+)", lambda: shortcuts.zoom_in(app))
-        self.fit_btn = _icon_button("fit", "Fit to drawing", self._fit)
-        self._zoom_shown = None
-        canvas = getattr(app, "canvas", None)
-        if canvas is not None:
-            canvas.installEventFilter(self)     # follow the zoom whatever changed it
         self.rail_btn = _icon_button("panel_left", "Tool rail: collapse or expand (Ctrl+1)",
                                      lambda: toggle_rail(app))
         self.bottom_btn = _icon_button("panel_bottom", "Bottom panel: show or hide (Ctrl+3)",
@@ -205,11 +191,8 @@ class TopBar(QToolBar):
         self.theme_btn = _icon_button("moon", "Toggle dark theme", self._toggle_theme)
 
         for widget in (brand, self._gap(12), self.room, self.copy_btn, self._gap(8), self.address,
-                       self._gap(8), self.chip, spacer, self.zoom_out_btn, self.zoom_pct,
-                       self.zoom_in_btn, self.fit_btn):
-            self.addWidget(widget)
-        self.addSeparator()
-        for widget in (self.rail_btn, self.bottom_btn, self.side_btn):
+                       self._gap(8), self.chip, spacer, self.rail_btn, self.bottom_btn,
+                       self.side_btn):
             self.addWidget(widget)
         self.addSeparator()
         self.addWidget(self.undo_btn)
@@ -253,28 +236,8 @@ class TopBar(QToolBar):
         self.theme_btn.setProperty("iconName", "sun" if dark else "moon")
         self.theme_btn.setToolTip("Switch to the %s theme" % ("light" if dark else "dark"))
         for btn in (self.copy_btn, self.undo_btn, self.redo_btn, self.theme_btn, self.rail_btn,
-                    self.bottom_btn, self.side_btn, self.zoom_out_btn, self.zoom_in_btn,
-                    self.fit_btn):
+                    self.bottom_btn, self.side_btn):
             _paint_icon(btn)
-
-    def _fit(self):
-        """Fit button: zoom to everything drawn (the whole page on an empty board)."""
-        canvas = getattr(self.app, "canvas", None)
-        if canvas is None:
-            return
-        if hasattr(canvas, "fit_content"):
-            canvas.fit_content()
-        else:
-            canvas.fit_page()
-
-    def eventFilter(self, obj, event):
-        """On every canvas repaint, show its zoom if it changed (a cheap compare); never swallow."""
-        if event.type() == QEvent.Paint:
-            zoom = round(getattr(obj, "zoom", 1.0) * 100)
-            if zoom != self._zoom_shown:
-                self._zoom_shown = zoom
-                self.zoom_pct.setText("%d%%" % zoom)
-        return False
 
 
 # --- status bar -------------------------------------------------------------------------
@@ -1052,10 +1015,7 @@ def toggle_bottom(app):
 
 def _sync_area_buttons(window):
     """Check the top-bar toggles of the areas that are shown / expanded."""
-    try:
-        bar = window.findChild(TopBar)
-    except RuntimeError:
-        return      # the window is being destroyed (its docks still report hiding)
+    bar = window.findChild(TopBar)
     if bar is None:
         return
     states = {bar.rail_btn: not rail_collapsed(window),
