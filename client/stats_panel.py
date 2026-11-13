@@ -214,7 +214,13 @@ class LiveGraph(QWidget):
 # --- The panel ----------------------------------------------------------------
 
 class StatsPanel(QWidget):
-    """Bottom dock: my RTT, everyone's RTT, client traffic rates, graph, copy button."""
+    """Bottom dock: my RTT, everyone's RTT, client traffic rates, graph, copy button.
+
+    `sampled` is emitted after every 1 s sample (GUI thread), so the compact
+    footer chip (client/shell.py) can show the same KB/s without sampling twice.
+    """
+
+    sampled = pyqtSignal()
 
     def __init__(self, app, parent=None):
         """Build the widgets and start the 1 s sampling timer."""
@@ -303,6 +309,7 @@ class StatsPanel(QWidget):
         self.samples.append((self.my_rtt_ms(), self.rates["msgs_in"] + self.rates["msgs_out"]))
         self._show_rates()
         self.graph.update()
+        self.sampled.emit()
 
     def _show_rates(self):
         """Show the current rates and the server counters."""

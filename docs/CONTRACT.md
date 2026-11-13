@@ -172,7 +172,7 @@ Each KINDS entry may also carry an optional `"limits": {field: [min, max]}`. For
 `server/bootstrap.py` and `client/bootstrap.py` import every module with plain import statements (PyInstaller needs static imports), in this order. The server's last line registers `versions.send_versions_on_join` as a join hook after chat, so VERSIONS follows CHAT_HISTORY.
 
 - Server: dispatcher, rooms, presence (P1); permissions (P4); board_state, board_ops, undo, sync, versions, assets (P3); chat (P4). Chat stays last so the join order is presence, snapshot, chat history.
-- Client: registry, app_state, net_client, board_model, render, render_draw, render_text, render_image, canvas, toolbar, tools.pen_tool, tools.shape_tools, tools.select_tool, tools.text_tool, tools.image_tool, shortcuts, draw_sync, chat_panel, users_panel, stats_panel, history_panel, cursor_overlay, toasts, export, icons, theme, connect_dialog, main_window.
+- Client: registry, app_state, net_client, board_model, render, render_draw, render_text, render_image, canvas, toolbar, tools.pen_tool, tools.shape_tools, tools.select_tool, tools.text_tool, tools.image_tool, shortcuts, draw_sync, chat_panel, users_panel, stats_panel, history_panel, cursor_overlay, toasts, export, icons, theme, connect_dialog, main_window, shell.
 
 ## H. File map
 

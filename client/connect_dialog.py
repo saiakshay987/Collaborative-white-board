@@ -39,7 +39,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QDialog, QFormLayo
                              QVBoxLayout, QWidget)
 
 from common import config, netinfo, protocol
-from client import net_client
+from client import icons, net_client, theme
 from client.registry import on_message
 
 # ERROR codes (contract B) shown as plain-language messages.
@@ -70,7 +70,10 @@ KEY_LAST_NAME = "join/username"
 # Room list (Revision 5): how often the Join tab asks the server again, and the table columns.
 ROOM_REFRESH_MS = 5000
 ROOM_COLUMNS = ["Room", "Host", "Online", "Objects", "Lock", "Updated"]
-LOCK_ICON = "\U0001F512"   # padlock, shown for a room that has a password
+LOCK_ICON = "Locked"        # Lock cell text of a password room, shown next to a painted padlock
+LOCK_COLUMN = ROOM_COLUMNS.index("Lock")
+# Columns sized to their contents (the rest share the width), so "10 Nov 14:05" is never cut.
+FIT_COLUMNS = ("Online", "Objects", "Lock", "Updated")
 
 # The dialog currently waiting for JOIN_OK / ERROR, if any. The on_message
 # handlers below are registered once at import time and forward to it.
@@ -223,7 +226,10 @@ class ConnectDialog(QDialog):
         self.rooms_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.rooms_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.rooms_table.setMinimumHeight(120)
-        self.rooms_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.rooms_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        for name in FIT_COLUMNS:
+            header.setSectionResizeMode(ROOM_COLUMNS.index(name), QHeaderView.ResizeToContents)
         self.rooms_table.setToolTip("Double-click a room to fill in its code.")
         self.rooms_table.cellDoubleClicked.connect(self._room_chosen)
         self.rooms_status = QLabel("Enter the server IP to see its rooms.")
@@ -409,6 +415,10 @@ class ConnectDialog(QDialog):
             for c, text in enumerate(room_cells(row, now)):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignCenter if c >= 2 else Qt.AlignVCenter | Qt.AlignLeft)
+                if c == LOCK_COLUMN and text == LOCK_ICON:
+                    # A painted padlock (no emoji, no image file) next to the word.
+                    item.setIcon(icons.get_icon("lock", 16, theme.tokens()["text_soft"]))
+                    item.setToolTip("This room has a password")
                 item.setData(Qt.UserRole, row)      # the double-click handler reads code and locked from here
                 self.rooms_table.setItem(r, c, item)
             if row.get("code") == selected:

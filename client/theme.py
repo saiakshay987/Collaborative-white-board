@@ -308,6 +308,7 @@ QToolButton:disabled { color: $disabled_text; }
 QToolButton#toolButton { padding: 6px 8px; text-align: left; }
 QToolButton#toolButton:checked { font-weight: 600; }
 QToolButton#formatToggle { border: 1px solid $border_strong; padding: 2px; }
+QToolButton[railCompact="true"] { padding: 0px; }
 QToolButton#formatToggle:checked { border-color: $primary; }
 
 /* ---- text inputs, spin boxes, combo boxes ---- */
@@ -407,15 +408,31 @@ QFrame[card="true"] { background: $surface; border: 1px solid $border; border-ra
 QProgressBar { background: $hover; border: none; border-radius: 4px; height: 8px; text-align: center; }
 QProgressBar::chunk { background: $primary; border-radius: 4px; }
 
-/* ---- small text roles and pill badges (used by later phases) ---- */
+/* ---- small text roles and pill badges ---- */
 QLabel[muted="true"] { color: $muted; font-size: ${small}pt; }
 QLabel[section="true"] { font-weight: 600; }
-QLabel[pill] { border-radius: 10px; padding: 2px 8px; font-size: ${small}pt; font-weight: 600; }
-QLabel[pill="neutral"] { background: $surface_alt; color: $text_soft; border: 1px solid $border; }
-QLabel[pill="primary"] { background: $primary_soft; color: $primary_text; border: 1px solid $primary_soft; }
-QLabel[pill="success"] { background: $success_soft; color: $success_text; border: 1px solid $success_soft; }
-QLabel[pill="warning"] { background: $warning_soft; color: $warning_text; border: 1px solid $warning_soft; }
-QLabel[pill="danger"] { background: $danger_soft; color: $danger_text; border: 1px solid $danger_soft; }
+QLabel[pill], QToolButton[pill] {
+    border-radius: 10px; padding: 2px 8px; font-size: ${small}pt; font-weight: 600;
+}
+QLabel[pill="neutral"], QToolButton[pill="neutral"] { background: $surface_alt; color: $text_soft; border: 1px solid $border; }
+QLabel[pill="primary"], QToolButton[pill="primary"] { background: $primary_soft; color: $primary_text; border: 1px solid $primary_soft; }
+QLabel[pill="success"], QToolButton[pill="success"] { background: $success_soft; color: $success_text; border: 1px solid $success_soft; }
+QLabel[pill="warning"], QToolButton[pill="warning"] { background: $warning_soft; color: $warning_text; border: 1px solid $warning_soft; }
+QLabel[pill="danger"], QToolButton[pill="danger"] { background: $danger_soft; color: $danger_text; border: 1px solid $danger_soft; }
+QToolButton#statsChip { padding: 1px 8px; }
+QToolButton#statsChip:hover { border-color: $primary; }
+
+/* ---- shell: top bar, compact rail, dock scroll areas, compact history buttons ---- */
+QToolBar#toolbar_top { padding: 4px 10px; spacing: 4px; }
+QLabel#brand { font-weight: 700; font-size: 11pt; }
+QScrollArea#dockScroll { background: transparent; border: none; }
+QScrollArea#dockScroll > QWidget > QWidget { background: transparent; }
+ToolDock QGroupBox { font-size: ${small}pt; border: none; margin-top: 14px; padding-top: 4px; }
+ToolDock FormatBar {
+    font-size: ${body}pt; border: 1px solid $border; margin-top: 18px; padding: 10px 8px 8px 8px;
+}
+HistoryPanel QPushButton { padding: 3px 10px; min-height: 16px; }
+QStatusBar { min-height: 28px; }
 QLabel#viewOnlyBanner { background: $warning_soft; color: $warning_text; font-weight: 600; }
 """)
 
@@ -427,7 +444,7 @@ def build_stylesheet(mode):
     PNGs (icons.write_png), because QSS can only load images from files.
     """
     t = dict(TOKENS[mode])
-    t.update(rc=RADIUS_CONTROL, rk=RADIUS_CARD, small=SMALL_PT,
+    t.update(rc=RADIUS_CONTROL, rk=RADIUS_CARD, small=SMALL_PT, body=BODY_PT,
              chev_down=icons.write_png("chevron_down", 12, t["muted"]),
              chev_up=icons.write_png("chevron_up", 12, t["muted"]),
              close_icon=icons.write_png("close", 12, t["muted"]))
@@ -563,7 +580,9 @@ def _decorate_tool_buttons(root, by_label, tips):
             continue
         btn.setIcon(_state_icon(TOOL_ICONS.get(tool_id, tool_id)))
         btn.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
-        btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        # shell.py makes the rail icon-only; a later re-decoration must not undo that.
+        btn.setToolButtonStyle(Qt.ToolButtonIconOnly if btn.property("railCompact")
+                               else Qt.ToolButtonTextBesideIcon)
         btn.setProperty("toolId", tool_id)
         if not btn.toolTip():
             btn.setToolTip(tips[tool_id])

@@ -21,47 +21,26 @@ then adds the painted icons to the window and the dialogs.
 import sys
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QApplication, QLabel
+from PyQt5.QtWidgets import QApplication
 
 import client.bootstrap  # noqa: F401  (runs every registration)
 from client.app_state import AppState
 from client.board_model import BoardModel
-from client import cursor_overlay, theme, toasts
+from client import cursor_overlay, shell, theme, toasts
 from common import config
 from client.connect_dialog import ConnectDialog
 from client.main_window import MainWindow
 from client.net_client import NetClient
 
 
-class ConnectionStatus(QLabel):
-    """Permanent status-bar label: Connected, Reconnecting... or Disconnected.
+class ConnectionStatus(shell.ConnectionChip):
+    """Permanent status-bar pill: Connected (green), Reconnecting... (amber) or Disconnected (red).
 
     Driven only by NetClient's Qt signals (contract F), which are emitted on
-    the GUI thread, so updating the label here is thread-safe. It is a
-    permanent widget, so a status-bar message never hides it.
+    the GUI thread, so updating it is thread-safe. It is a permanent widget,
+    so a status-bar message never hides it. The look and the states live in
+    shell.ConnectionChip, which the top bar uses too.
     """
-
-    # state -> (text, colour)
-    STATES = {
-        "connected": ("Connected", "#2e7d32"),
-        "reconnecting": ("Reconnecting...", "#e67e22"),
-        "disconnected": ("Disconnected", "#c0392b"),
-    }
-
-    def __init__(self, net, parent=None):
-        """Start as Connected (the window opens only after JOIN_OK) and follow net."""
-        super().__init__(parent)
-        self.set_state("connected")
-        net.connected.connect(lambda: self.set_state("connected"))
-        net.reconnected.connect(lambda: self.set_state("connected"))
-        net.reconnecting.connect(lambda: self.set_state("reconnecting"))
-        net.disconnected.connect(lambda _reason: self.set_state("disconnected"))
-
-    def set_state(self, state):
-        """Show one of STATES."""
-        text, colour = self.STATES[state]
-        self.setText(text)
-        self.setStyleSheet("color: %s; font-weight: bold; padding: 0 6px;" % colour)
 
 
 def wire_status(app, window):
@@ -70,6 +49,24 @@ def wire_status(app, window):
     app.net.reconnecting.connect(lambda: app.toast("Connection lost, reconnecting..."))
     app.net.reconnected.connect(lambda: app.toast("Reconnected, catching up..."))
     window.setWindowTitle("LAN Whiteboard - room %s - %s" % (app.me.room, app.me.username))
+
+
+def build_window(app):
+    """Build the main window for app and make it ready to show.
+
+    MainWindow (P4) builds everything from the registries; wire_status adds
+    the connection pill and toasts; shell.install arranges the window (top
+    bar, compact tool rail, docks, status pills, saved layout) and
+    cursor_overlay.install puts the live cursors over the canvas (it needs
+    app.canvas, which MainWindow creates). scripts/a_ui_smoke.py uses this
+    same function, so the screenshots show exactly what users get.
+    """
+    window = MainWindow(app)
+    app.window = window
+    wire_status(app, window)
+    shell.install(app, window)
+    cursor_overlay.install(app)
+    return window
 
 
 class SessionFlow:
@@ -185,14 +182,10 @@ def main():
         app.net.disconnect()
         return 0
 
-    window = MainWindow(app)
-    app.window = window
-    wire_status(app, window)
-    theme.decorate_widgets(window)
+    window = build_window(app)
     flow = SessionFlow(app, window)
     app.net.disconnected.connect(flow.on_disconnected)
     qapp.aboutToQuit.connect(lambda: setattr(flow, "quitting", True))
-    cursor_overlay.install(app)  # live cursors need app.canvas, built by MainWindow
     toasts.preload_sounds()      # generate the join/leave sounds before the first join
     window.show()
     code = qapp.exec_()
