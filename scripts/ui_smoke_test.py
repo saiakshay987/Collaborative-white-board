@@ -1,12 +1,12 @@
 # OWNER: P1
-"""a_ui_smoke.py: Build the real client UI offscreen, check the layout and save screenshots.
+"""ui_smoke_test.py: Build the real client UI offscreen, check the layout and save screenshots.
 
-    python scripts/a_ui_smoke.py
+    python scripts/ui_smoke_test.py
 
 No server is needed: the main window is built exactly like run_client.py
 builds it (run_client.build_window: registries, shell layout, cursors) with
 a fake session (user, role, room, four users), and the connect dialog is
-built as the join screen. Screenshots go to scripts/a_ui_shots/ (git-ignored):
+built as the join screen. Screenshots go to scripts/ui_shots/ (git-ignored):
 
     main_<mode>_<W>x<H>[_s15].png       main window, 1920x1080 and 1366x768
     main_viewer_<mode>_1366x768.png     the same as a viewer (banner, greyed tools)
@@ -51,7 +51,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHOTS = os.path.join(ROOT, "scripts", "a_ui_shots")
+SHOTS = os.path.join(ROOT, "scripts", "ui_shots")
 
 # Fake session shown in the screenshots.
 ME = {"username": "sharwan", "role": "host", "color": "#e6194b", "room": "K7QX2M"}

@@ -1,9 +1,9 @@
 # OWNER: P4
-"""p4_test_text.py: tests for text and sticky objects: kinds_text, render_text and text_tool.
+"""test_text_objects.py: tests for text and sticky objects: kinds_text, render_text and text_tool.
 
 Run from the project root with either
-    python scripts/p4_test_text.py
-    python -m unittest scripts.p4_test_text
+    python scripts/test_text_objects.py
+    python -m unittest scripts.test_text_objects
 No network and no display are needed: Qt runs with the "offscreen" platform,
 the network is a small fake that records what would be sent, and keyboard and
 mouse input is simulated with QTest on the real canvas and select tool.
@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-# Allow `python scripts/p4_test_text.py` (the script folder is not the project root).
+# Allow `python scripts/test_text_objects.py` (the script folder is not the project root).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt5.QtCore import QObject, QPoint, QPointF, QSettings, Qt, pyqtSignal  # noqa: E402

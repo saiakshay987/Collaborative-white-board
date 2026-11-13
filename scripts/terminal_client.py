@@ -1,11 +1,11 @@
 # OWNER: P1
-"""p1_test_client.py: Terminal test client: create or join a room and print every message.
+"""terminal_client.py: Terminal test client: create or join a room and print every message.
 
 Run from the project root (server must be running):
 
-    python scripts/p1_test_client.py create alice [--password pw]
-    python scripts/p1_test_client.py join   bob   --room K7QX2M [--password pw]
-    python scripts/p1_test_client.py join   alice --room K7QX2M --token <hex> [--last-seq N]
+    python scripts/terminal_client.py create alice [--password pw]
+    python scripts/terminal_client.py join   bob   --room K7QX2M [--password pw]
+    python scripts/terminal_client.py join   alice --room K7QX2M --token <hex> [--last-seq N]
 
 Options: --host (default 127.0.0.1), --port (default config.PORT).
 

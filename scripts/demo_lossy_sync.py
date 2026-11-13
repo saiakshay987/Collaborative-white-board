@@ -1,10 +1,10 @@
 # OWNER: P3
-"""p3_sync_demo.py: Live demo of 'delayed, duplicated or missing updates' (contract E2, E3).
+"""demo_lossy_sync.py: Live demo of 'delayed, duplicated or missing updates' (contract E2, E3).
 
 Run from the project root (PowerShell shown; Linux/macOS: WB_DROP_PCT=20 python scripts/...):
 
-    $env:WB_DROP_PCT=20; $env:WB_DUP_PCT=10; python scripts/p3_sync_demo.py
-    python scripts/p3_sync_demo.py --clients 3 --seconds 20
+    $env:WB_DROP_PCT=20; $env:WB_DUP_PCT=10; python scripts/demo_lossy_sync.py
+    python scripts/demo_lossy_sync.py --clients 3 --seconds 20
 
 What it does, all in one process but over REAL TCP sockets:
   * starts the real server (server/bootstrap handlers, framing, rooms) on a free local port

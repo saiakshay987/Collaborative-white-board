@@ -10,7 +10,7 @@ One laptop runs WhiteboardServer. Every laptop (the server laptop too) runs Whit
 2) Server laptop only, once: open the firewall.
    Windows: Start > type PowerShell > right-click > "Run as administrator", go to this folder:
        cd "C:\path\to\this\folder"
-       powershell -ExecutionPolicy Bypass -File .\a_open_firewall.ps1
+       powershell -ExecutionPolicy Bypass -File .\open_firewall.ps1
    Linux: see FIREWALL_LINUX.txt (sudo ufw allow 5050/tcp).
 
 3) Double-click WhiteboardServer. A black window opens and shows lines like:

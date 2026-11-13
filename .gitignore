@@ -8,5 +8,5 @@ server_data/
 *.spec.bak
 .build_venv/
 
-# UI screenshots written by scripts/a_ui_smoke.py
-scripts/a_ui_shots/
+# UI screenshots written by scripts/ui_smoke_test.py
+scripts/ui_shots/

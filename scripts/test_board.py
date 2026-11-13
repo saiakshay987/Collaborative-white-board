@@ -1,7 +1,7 @@
 # OWNER: P3
-"""p3_test_board.py: Unit tests for server/board_state.py, server/undo.py, server/board_ops.py and server/sync.py.
+"""test_board.py: Unit tests for server/board_state.py, server/undo.py, server/board_ops.py and server/sync.py.
 
-Run from the project root:  python scripts/p3_test_board.py
+Run from the project root:  python scripts/test_board.py
 
 The first part (ordering, strokes, snapshots, deltas, undo) tests BoardState
 and UndoManager directly. The last part (HandlerTests, SyncTests) drives the

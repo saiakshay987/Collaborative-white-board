@@ -1,10 +1,10 @@
 # OWNER: P3
-"""p3_test_versions.py: Tests for the version history (server/versions.py): VERSION_SAVE / LIST / RESTORE,
+"""test_versions.py: Tests for the version history (server/versions.py): VERSION_SAVE / LIST / RESTORE,
 the periodic version and the version files on disk.
 
-Run from the project root:  python scripts/p3_test_versions.py
+Run from the project root:  python scripts/test_versions.py
 
-Uses the fake sessions of p3_test_board.py (no sockets). Disk tests write into
+Uses the fake sessions of test_board.py (no sockets). Disk tests write into
 their own temporary folder, never into the real server_data/.
 """
 import json
@@ -16,8 +16,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import p3_test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
-from p3_test_board import FakeSession, HandlerBase, rect  # noqa: E402
+import test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
+from test_board import FakeSession, HandlerBase, rect  # noqa: E402
 
 from server import chat, permissions, rooms, versions  # noqa: E402,F401  (chat: registers room.chat, as server/bootstrap.py does)
 from server.board_state import BoardState  # noqa: E402

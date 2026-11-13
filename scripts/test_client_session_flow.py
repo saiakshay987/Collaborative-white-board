@@ -1,7 +1,7 @@
 # OWNER: P1
-"""p1_test_session_flow.py: The real Qt client leaves a room and joins it again.
+"""test_client_session_flow.py: The real Qt client leaves a room and joins it again.
 
-Run from the project root (no display needed):  python scripts/p1_test_session_flow.py
+Run from the project root (no display needed):  python scripts/test_client_session_flow.py
 
 A real server runs in this process (temp data folder). Client A is the real
 GUI client (AppState, NetClient, BoardModel, MainWindow, SessionFlow of
@@ -45,7 +45,7 @@ from common import framing, protocol  # noqa: E402
 from server import server as server_mod  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from p1_test_rejoin import Client, check, FAILS  # noqa: E402
+from test_rejoin import Client, check, FAILS  # noqa: E402
 
 qapp = QApplication(sys.argv)
 SCREENS = []     # one dict per join screen shown: the arguments and what the client looked like

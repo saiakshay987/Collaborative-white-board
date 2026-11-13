@@ -1,9 +1,9 @@
 # OWNER: P3
-"""p3_test_persistence.py: Tests for 'before clear' versions and autosave/restore (server/versions.py).
+"""test_persistence.py: Tests for 'before clear' versions and autosave/restore (server/versions.py).
 
-Run from the project root:  python scripts/p3_test_persistence.py
+Run from the project root:  python scripts/test_persistence.py
 
-Uses the fake sessions of p3_test_board.py (no sockets). Every test writes into
+Uses the fake sessions of test_board.py (no sockets). Every test writes into
 its own temporary folder, never into the real server_data/.
 """
 import json
@@ -17,8 +17,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import p3_test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
-from p3_test_board import FakeSession, HandlerBase, rect  # noqa: E402
+import test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
+from test_board import FakeSession, HandlerBase, rect  # noqa: E402
 
 from server import chat, rooms, versions  # noqa: E402,F401  (chat: registers room.chat, as server/bootstrap.py does)
 

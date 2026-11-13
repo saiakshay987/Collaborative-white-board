@@ -276,7 +276,7 @@ def objects_checksum(objects):
 
     The client keeps an identical copy of this function in
     client/board_model.py (the client must not import server code);
-    p3_test_board_model.py checks that the two agree.
+    test_board_model.py checks that the two agree.
     """
     blob = json.dumps(sorted(objects.values(), key=lambda o: o['id']),
                       sort_keys=True, separators=(',', ':'))

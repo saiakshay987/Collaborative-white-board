@@ -1,9 +1,9 @@
 # OWNER: P1
-"""p1_test_broadcast_race.py: Stress test for the room.broadcast / send_to race.
+"""test_broadcast_race.py: Stress test for the room.broadcast / send_to race.
 
 Run from the project root (no server needed, no sockets are opened):
 
-    python scripts/p1_test_broadcast_race.py
+    python scripts/test_broadcast_race.py
 
 What it checks. Room.broadcast used to copy the member list under
 room.lock and then read m.session AGAIN outside the lock. If another thread

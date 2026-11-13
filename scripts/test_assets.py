@@ -1,9 +1,9 @@
 # OWNER: P3
-"""p3_test_assets.py: Tests for server/assets.py (IMG_* upload, ASSET_GET, quotas, persistence) and the image rules of board_ops.
+"""test_assets.py: Tests for server/assets.py (IMG_* upload, ASSET_GET, quotas, persistence) and the image rules of board_ops.
 
-Run from the project root:  python scripts/p3_test_assets.py
+Run from the project root:  python scripts/test_assets.py
 
-Uses the fake sessions of p3_test_board.py (no sockets). Disk tests write into their own
+Uses the fake sessions of test_board.py (no sockets). Disk tests write into their own
 temporary folder, never into the real server_data/.
 """
 import base64
@@ -18,8 +18,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import p3_test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
-from p3_test_board import FakeSession, HandlerBase, TEST_KINDS  # noqa: E402
+import test_board as base  # noqa: E402  (sets WB_DATA_DIR to a temp folder before server.versions loads)
+from test_board import FakeSession, HandlerBase, TEST_KINDS  # noqa: E402
 
 from common import kinds_image, models  # noqa: E402
 from server import assets, chat, rooms, versions  # noqa: E402,F401  (chat: registers room.chat, as server/bootstrap.py does)

@@ -1,7 +1,7 @@
 # OWNER: P3
-"""p3_test_export.py: Tests for client/export.py (JSON save/load, PNG and PDF export).
+"""test_export.py: Tests for client/export.py (JSON save/load, PNG and PDF export).
 
-Run from the project root:  python scripts/p3_test_export.py
+Run from the project root:  python scripts/test_export.py
 
 No window and no network: the file format and the object preparation are plain
 functions, BoardLoader runs on a Qt event loop with a fake app and a fake send

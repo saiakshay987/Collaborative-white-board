@@ -1,7 +1,7 @@
 # OWNER: P3
-"""p3_test_history_panel.py: Tests for client/history_panel.py (version list, buttons, footer, Ctrl+S).
+"""test_history_panel.py: Tests for client/history_panel.py (version list, buttons, footer, Ctrl+S).
 
-Run from the project root:  python scripts/p3_test_history_panel.py
+Run from the project root:  python scripts/test_history_panel.py
 
 Needs PyQt5. Runs with Qt's offscreen platform (no window appears) and a fake
 NetClient that only records what would have been sent.

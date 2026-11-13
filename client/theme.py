@@ -28,7 +28,7 @@ Public API
                                    after a switch, text-colour tokens written into
                                    a widget's own style sheet follow the new mode
     contrast_ratio(fg, bg)         WCAG ratio; every text token pair is >= 4.5:1
-                                   (checked by scripts/a_ui_smoke.py)
+                                   (checked by scripts/ui_smoke_test.py)
 
 Sizes: one font scale (SMALL_PT 9, BODY_PT 10, TITLE_PT 12, DISPLAY_PT 16 and,
 on the host's "room ready" page only, HEADLINE_PT 22 and HERO_PT 30) and two

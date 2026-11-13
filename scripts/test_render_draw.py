@@ -1,7 +1,7 @@
 # OWNER: P2
-"""p2_render_test.py: Offline test for common/kinds_draw.py and client/render_draw.py.
+"""test_render_draw.py: Offline test for common/kinds_draw.py and client/render_draw.py.
 
-Run from the project root:  python scripts/p2_render_test.py
+Run from the project root:  python scripts/test_render_draw.py
 
 Checks:
   1. One object of every draw kind (and every stroke tool) passes
@@ -9,7 +9,7 @@ Checks:
   2. Broken objects (bad color, width 0 or 41, alpha 2, unknown tool,
      20001 points, negative size, wrong types) are rejected.
   3. render.render_board paints all of them onto a QImage without errors,
-     which is saved as p2_render_test.png for a visual check.
+     which is saved as test_render_draw.png for a visual check.
 No server or network is needed.
 """
 
@@ -26,7 +26,7 @@ from PyQt5.QtGui import QColor, QGuiApplication, QImage, QPainter  # noqa: E402
 from client import render, render_draw  # noqa: E402,F401  (render_draw registers renderers)
 from common import kinds_draw, models  # noqa: E402
 
-OUT_PNG = os.path.join(ROOT, "p2_render_test.png")
+OUT_PNG = os.path.join(ROOT, "test_render_draw.png")
 
 
 def wave(x0, y0, length, amp, n=60):

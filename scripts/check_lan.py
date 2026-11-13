@@ -1,7 +1,7 @@
 # OWNER: P1
-"""a_check_lan.py: Can this PC open a TCP connection to the whiteboard server?
+"""check_lan.py: Can this PC open a TCP connection to the whiteboard server?
 
-    python scripts/a_check_lan.py <ip> [port]
+    python scripts/check_lan.py <ip> [port]
 
 Prints whether the TCP connect succeeded and how long it took. Run it on a
 FRIEND's laptop, with the IP the server printed ("Clients should connect
@@ -61,7 +61,7 @@ def check(ip, port, timeout=TIMEOUT_S):
 def main(argv):
     """Parse <ip> [port], run the check, print one line; exit code 0 only on success."""
     if len(argv) < 2 or len(argv) > 3:
-        print("usage: python scripts/a_check_lan.py <ip> [port]")
+        print("usage: python scripts/check_lan.py <ip> [port]")
         return 2
     ip = argv[1]
     try:
