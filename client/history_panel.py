@@ -50,6 +50,7 @@ MAX_NAME_LEN = 60                       # longest version name the server accept
 HOST_ONLY_TIP = "Only the host can %s a version"   # tooltip of a disabled button / menu entry
 AUTO_NAME_RESTORE = "before restore "   # the names the server gives to its automatic versions
 AUTO_NAME_CLEAR = "before clear"
+EMPTY_TEXT = "No versions yet. Save one to keep a snapshot."   # shown while the list is empty
 
 
 # ---------------------------------------------------------------- small pure helpers
@@ -263,36 +264,56 @@ class HistoryPanel(QWidget):
         self.table.verticalHeader().hide()
         self.table.setMinimumHeight(90)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)       # Name fills the width
         for col in (1, 2, 3):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.table.setShowGrid(False)                              # card-style rows: client/theme.py
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        # Shown over the empty list (muted, centred; clicks go through to the table).
+        self.empty_label = QLabel(EMPTY_TEXT, self.table.viewport())
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setProperty("muted", True)
+        self.empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         self.save_btn = QPushButton("Save version")
+        self.save_btn.setObjectName("historySave")
         self.save_btn.setToolTip("Store a copy of the board (Ctrl+S saves with a default name)")
-        self.restore_btn = QPushButton("Restore")
-        self.rename_btn = QPushButton("Rename")
-        self.delete_btn = QPushButton("Delete")
-        self.undo_btn = QPushButton("Undo")
+        # Icon-only buttons (icons and look: client/theme.py); the tooltip says what each one does.
+        self.restore_btn = QPushButton()
+        self.rename_btn = QPushButton()
+        self.delete_btn = QPushButton()
+        self.undo_btn = QPushButton()
         self.undo_btn.setToolTip("Undo my last change (Ctrl+Z)")
-        self.redo_btn = QPushButton("Redo")
+        self.redo_btn = QPushButton()
         self.redo_btn.setToolTip("Redo what I undid (Ctrl+Y)")
+        for button, name in ((self.restore_btn, "Restore"), (self.rename_btn, "Rename"),
+                             (self.delete_btn, "Delete"), (self.undo_btn, "Undo"),
+                             (self.redo_btn, "Redo")):
+            button.setObjectName("history" + name)
+            button.setAccessibleName(name)
         self.footer = QLabel()
         font = QFont("Consolas")
         font.setStyleHint(QFont.Monospace)
         self.footer.setFont(font)
         self.footer.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.footer.setToolTip("Same seq and no pending operations on two clients: the checksums must be equal")
+        self.footer.setProperty("muted", True)             # small muted footer: client/theme.py
 
-        buttons = QVBoxLayout()
-        for button in (self.save_btn, self.restore_btn, self.rename_btn, self.delete_btn, self.undo_btn, self.redo_btn):
+        # One compact row above the list: Save | Restore Rename Delete | Undo Redo.
+        buttons = QHBoxLayout()
+        buttons.setSpacing(4)
+        buttons.addWidget(self.save_btn)
+        buttons.addSpacing(8)
+        for button in (self.restore_btn, self.rename_btn, self.delete_btn):
+            buttons.addWidget(button)
+        buttons.addSpacing(8)
+        for button in (self.undo_btn, self.redo_btn):
             buttons.addWidget(button)
         buttons.addStretch(1)
-        top = QHBoxLayout()
-        top.addWidget(self.table, 1)
-        top.addLayout(buttons)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
-        layout.addLayout(top, 1)
+        layout.addLayout(buttons)
+        layout.addWidget(self.table, 1)
         layout.addWidget(self.footer)
 
         self.save_btn.clicked.connect(self.on_save)
@@ -341,7 +362,18 @@ class HistoryPanel(QWidget):
                 self.table.setItem(row, col, item)
             if keep is not None and keep["id"] == v["id"]:
                 self.table.selectRow(row)
+        self.empty_label.setVisible(self.table.rowCount() == 0)
+        self._place_empty_label()
         self.refresh_buttons()
+
+    def _place_empty_label(self):
+        """Stretch the empty-list text over the table's visible area."""
+        self.empty_label.setGeometry(self.table.viewport().rect())
+
+    def resizeEvent(self, event):
+        """Keep the empty-list text centred when the panel (and so the table) is resized."""
+        super().resizeEvent(event)
+        self._place_empty_label()
 
     def refresh_buttons(self):
         """Enable the buttons the role may use (the server checks again)."""

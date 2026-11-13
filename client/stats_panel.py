@@ -18,7 +18,9 @@ Two data sources, both read on the GUI thread only:
 
 The last 60 one-second samples feed a small line graph (my RTT and
 messages per second) painted with QPainter. RTT is colored green below
-20 ms, amber below 100 ms and red above. "Copy stats" puts a one-line
+20 ms, amber below 100 ms and red above, in the theme's colours
+(client/theme.py), so it stays readable in light and dark. The numbers sit
+in four metric tiles: My RTT, In, Out and Server. "Copy stats" puts a one-line
 summary on the clipboard for the report (e.g. P2's batching comparison:
 draw with draw_sync.BATCHING True and False and compare "out msg/s").
 """
@@ -32,7 +34,7 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
-from client import draw_sync
+from client import draw_sync, theme
 from client.registry import on_message, register_panel
 from common import framing, protocol
 
@@ -45,26 +47,23 @@ HISTORY = 60
 # RTT color thresholds (ms): below GREEN_MS green, below AMBER_MS amber, else red.
 GREEN_MS = 20
 AMBER_MS = 100
-GREEN = QColor("#2e7d32")
-AMBER = QColor("#e69500")
-RED = QColor("#c62828")
-GREY = QColor("#9e9e9e")
-
-# Series color for messages per second in the graph.
-MSG_COLOR = QColor("#4363d8")
-
 KB = 1024.0
 
 
-def rtt_color(ms):
-    """Return the QColor for an RTT in ms (grey when unknown)."""
+def rtt_tone(ms):
+    """Return the tone of an RTT in ms: 'success' (fast), 'warning', 'danger' (slow) or 'muted' (unknown)."""
     if ms is None:
-        return GREY
+        return "muted"
     if ms < GREEN_MS:
-        return GREEN
-    if ms < AMBER_MS:
-        return AMBER
-    return RED
+        return "success"
+    return "warning" if ms < AMBER_MS else "danger"
+
+
+def rtt_color(ms):
+    """Return the QColor for an RTT in ms: the theme's success / warning / danger text colour
+    (readable on panels in light and dark), muted grey when unknown."""
+    tone = rtt_tone(ms)
+    return QColor(theme.tokens()["muted" if tone == "muted" else tone + "_text"])
 
 
 def fmt_rtt(ms):
@@ -151,21 +150,23 @@ class LiveGraph(QWidget):
 
     def paintEvent(self, _event):
         """Paint the frame, grid, both series and the scale labels."""
+        t = theme.tokens()
+        grey, msg_color = QColor(t["muted"]), QColor(t["primary"])
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), self.palette().base())
+        p.fillRect(self.rect(), QColor(t["surface"]))
         font = QFont(self.font())
-        font.setPointSizeF(max(7.0, font.pointSizeF() - 1))
+        font.setPointSizeF(theme.SMALL_PT)
         p.setFont(font)
         plot = QRectF(self.rect()).adjusted(6, 16, -6, -14)
 
         # Frame and three horizontal grid lines.
-        p.setPen(QPen(GREY, 1, Qt.DotLine))
+        p.setPen(QPen(QColor(t["border_strong"]), 1, Qt.DotLine))
         for k in range(1, 4):
             y = plot.top() + plot.height() * k / 4
             p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
-        p.setPen(QPen(GREY, 1))
-        p.drawRect(plot)
+        p.setPen(QPen(QColor(t["border_strong"]), 1))
+        p.drawRoundedRect(plot, 4, 4)
 
         rtts = [s[0] for s in self.samples if s[0] is not None]
         rates = [s[1] for s in self.samples]
@@ -181,7 +182,7 @@ class LiveGraph(QWidget):
                     path.lineTo(pt)
                 else:
                     path.moveTo(pt)
-            p.setPen(QPen(MSG_COLOR, 1.5))
+            p.setPen(QPen(msg_color, 1.5))
             p.drawPath(path)
 
         # My RTT: each segment colored by the threshold of its newer point,
@@ -198,13 +199,13 @@ class LiveGraph(QWidget):
             prev = pt
 
         # Labels: scales at the top, time axis at the bottom.
-        p.setPen(self.palette().text().color())
+        p.setPen(QColor(t["text_soft"]))
         p.drawText(QRectF(plot.left(), 0, plot.width(), 15), Qt.AlignLeft | Qt.AlignVCenter,
                    "RTT (max %.0f ms)" % rtt_top)
-        p.setPen(MSG_COLOR)
+        p.setPen(msg_color)
         p.drawText(QRectF(plot.left(), 0, plot.width(), 15), Qt.AlignRight | Qt.AlignVCenter,
                    "msg/s in+out (max %.0f)" % rate_top)
-        p.setPen(GREY)
+        p.setPen(grey)
         bottom = QRectF(plot.left(), plot.bottom() + 1, plot.width(), 13)
         p.drawText(bottom, Qt.AlignLeft | Qt.AlignVCenter, "-%d s" % HISTORY)
         p.drawText(bottom, Qt.AlignRight | Qt.AlignVCenter, "now")
@@ -214,7 +215,13 @@ class LiveGraph(QWidget):
 # --- The panel ----------------------------------------------------------------
 
 class StatsPanel(QWidget):
-    """Bottom dock: my RTT, everyone's RTT, client traffic rates, graph, copy button."""
+    """Bottom dock: my RTT, everyone's RTT, client traffic rates, graph, copy button.
+
+    `sampled` is emitted after every 1 s sample (GUI thread), so the compact
+    footer chip (client/shell.py) can show the same KB/s without sampling twice.
+    """
+
+    sampled = pyqtSignal()
 
     def __init__(self, app, parent=None):
         """Build the widgets and start the 1 s sampling timer."""
@@ -227,15 +234,21 @@ class StatsPanel(QWidget):
         self._last = framing.stats_snapshot()
         self._last_t = time.monotonic()
 
+        # Values (big) and their second lines (small, muted) for the four tiles.
         self.my_rtt = QLabel("-")
         big = QFont(self.my_rtt.font())
-        big.setPointSizeF(big.pointSizeF() * 1.6)
+        big.setPointSizeF(big.pointSizeF() * 1.5)
         big.setBold(True)
         self.my_rtt.setFont(big)
+        self.my_rtt_sub = QLabel("averaged by the server")
         self.traffic_in = QLabel()
+        self.traffic_in_sub = QLabel()
         self.traffic_out = QLabel()
+        self.traffic_out_sub = QLabel()
         self.server_line = QLabel()
-        self.server_line.setWordWrap(True)
+        self.server_sub = QLabel()
+        for value in (self.traffic_in, self.traffic_out, self.server_line):
+            value.setObjectName("metricValue")
         self.users_rtt = QLabel()
         self.users_rtt.setTextFormat(Qt.RichText)
         self.users_rtt.setWordWrap(True)
@@ -245,36 +258,40 @@ class StatsPanel(QWidget):
         self.copy_btn.clicked.connect(self.copy_stats)
         self.graph = LiveGraph(self.samples)
 
-        numbers = QGridLayout()
-        numbers.addWidget(QLabel("My RTT"), 0, 0)
-        numbers.addWidget(self.my_rtt, 0, 1)
-        numbers.addWidget(QLabel("In"), 1, 0)
-        numbers.addWidget(self.traffic_in, 1, 1)
-        numbers.addWidget(QLabel("Out"), 2, 0)
-        numbers.addWidget(self.traffic_out, 2, 1)
-        numbers.addWidget(self.copy_btn, 3, 0, 1, 2)
-        left = QVBoxLayout()
-        left.addLayout(numbers)
-        left.addWidget(self.server_line)
-        left.addStretch(1)
+        # Four metric tiles in a 2 x 2 grid.
+        tiles = QGridLayout()
+        tiles.setSpacing(6)
+        for i, (title, value, sub) in enumerate((
+                ("My RTT", self.my_rtt, self.my_rtt_sub),
+                ("Server", self.server_line, self.server_sub),
+                ("In", self.traffic_in, self.traffic_in_sub),
+                ("Out", self.traffic_out, self.traffic_out_sub))):
+            tiles.addWidget(self._tile(title, value, sub), i // 2, i % 2)
 
-        users_box = QVBoxLayout()
-        users_box.addWidget(QLabel("<b>RTT per user</b>"))
+        # RTT per user, with Copy stats in the card's header row.
+        users_card = QFrame()
+        users_card.setProperty("card", True)
+        users_box = QVBoxLayout(users_card)
+        users_box.setContentsMargins(10, 6, 10, 6)
+        head = QHBoxLayout()
+        title = QLabel("RTT per user")
+        title.setProperty("section", True)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self.copy_btn)
+        users_box.addLayout(head)
         users_box.addWidget(self.users_rtt, 1)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.addLayout(left)
-        layout.addWidget(line)
-        layout.addLayout(users_box, 1)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+        layout.addLayout(tiles)
+        layout.addWidget(users_card, 1)
         layout.addWidget(self.graph, 2)
 
         model.updated.connect(self.refresh_rtt)
         app.users_changed.connect(self.refresh_rtt)
+        theme.notifier.changed.connect(self._on_theme)
         # A QTimer runs in the GUI event loop: sampling never blocks the GUI
         # and needs no locking beyond framing's own stats lock.
         self._timer = QTimer(self)
@@ -282,6 +299,29 @@ class StatsPanel(QWidget):
         self._timer.start(SAMPLE_MS)
         self.refresh_rtt()
         self._show_rates()
+
+    @staticmethod
+    def _tile(title, value, sub):
+        """Return a metric tile: a small muted title, the value, a muted second line."""
+        tile = QFrame()
+        tile.setProperty("card", True)
+        tile.setObjectName("metricTile")
+        tile.setMinimumWidth(128)
+        box = QVBoxLayout(tile)
+        box.setContentsMargins(10, 6, 10, 6)
+        box.setSpacing(0)
+        head = QLabel(title)
+        head.setProperty("muted", True)
+        sub.setProperty("muted", True)
+        box.addWidget(head)
+        box.addWidget(value)
+        box.addWidget(sub)
+        return tile
+
+    def _on_theme(self, _mode):
+        """Theme switched: recolour the RTT texts and repaint the graph."""
+        self.refresh_rtt()
+        self.graph.update()
 
     # -- sampling ------------------------------------------------------------
 
@@ -303,26 +343,36 @@ class StatsPanel(QWidget):
         self.samples.append((self.my_rtt_ms(), self.rates["msgs_in"] + self.rates["msgs_out"]))
         self._show_rates()
         self.graph.update()
+        self.sampled.emit()
 
     def _show_rates(self):
         """Show the current rates and the server counters."""
         r = self.rates
-        self.traffic_in.setText("%.1f msg/s   %.2f KB/s" % (r["msgs_in"], r["bytes_in"] / KB))
-        self.traffic_out.setText("%.1f msg/s   %.2f KB/s" % (r["msgs_out"], r["bytes_out"] / KB))
+        self.traffic_in.setText("%.2f KB/s" % (r["bytes_in"] / KB))
+        self.traffic_in_sub.setText("%.1f msg/s" % r["msgs_in"])
+        self.traffic_out.setText("%.2f KB/s" % (r["bytes_out"] / KB))
+        self.traffic_out_sub.setText("%.1f msg/s" % r["msgs_out"])
         s = model.server
         if s:
-            self.server_line.setText(
-                "Server: %d clients, %d msgs in / %d out, %.1f KB in / %.1f KB out"
-                % (s.get("clients", 0), s.get("msgs_in", 0), s.get("msgs_out", 0),
-                   s.get("bytes_in", 0) / KB, s.get("bytes_out", 0) / KB))
+            self.server_line.setText("%d client%s" % (s.get("clients", 0),
+                                                      "" if s.get("clients", 0) == 1 else "s"))
+            self.server_sub.setText("%d / %d msgs, %.1f / %.1f KB in / out"
+                                    % (s.get("msgs_in", 0), s.get("msgs_out", 0),
+                                       s.get("bytes_in", 0) / KB, s.get("bytes_out", 0) / KB))
+            self.server_line.setToolTip("Server totals since it started")
         else:
-            self.server_line.setText("Server: waiting for STATS...")
+            self.server_line.setText("-")
+            self.server_sub.setText("waiting for STATS...")
 
     def refresh_rtt(self):
         """Update my RTT and the colored per-user RTT list from model."""
         mine = self.my_rtt_ms()
         self.my_rtt.setText(fmt_rtt(mine))
-        self.my_rtt.setStyleSheet("color: %s;" % rtt_color(mine).name())
+        # Coloured by the theme's QLabel[toneText=...] rule, so it follows light/dark by itself.
+        tone = rtt_tone(mine)
+        if self.my_rtt.property("toneText") != tone:
+            self.my_rtt.setProperty("toneText", tone)
+            theme.repolish(self.my_rtt)
         rows = []
         for u in self.app.users:
             if not u.get("online"):
@@ -332,7 +382,9 @@ class StatsPanel(QWidget):
             rows.append('<span style="color:%s">&#9679;</span> %s: <b style="color:%s">%s</b>'
                         % (html.escape(u.get("color") or "#000000"), html.escape(name),
                            rtt_color(ms).name(), fmt_rtt(ms)))
-        self.users_rtt.setText("<br>".join(rows) or "<i>nobody online</i>")
+        muted = theme.tokens()["muted"]
+        self.users_rtt.setText("<br>".join(rows)
+                               or '<i style="color:%s">nobody online</i>' % muted)
         self._show_rates()
 
     # -- copy ----------------------------------------------------------------

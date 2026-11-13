@@ -81,7 +81,7 @@ from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel,
                              QLineEdit, QMessageBox, QTextBrowser, QVBoxLayout)
 
-from client import ops, registry, toolbar
+from client import ops, registry, theme, toolbar
 from client.canvas import on_page
 from client.tools import shape_tools
 from common import config, protocol
@@ -116,9 +116,9 @@ GRID_MAX = 500                # largest
 BAR_MARGIN = 8                # pixels between the bar and the canvas edges
 HISTORY_MAX = 100             # commands remembered for Up/Down
 HINT_ROWS = 6                 # at most this many matching commands in the hint list
-ERROR_STYLE = "QLabel { color: #c62828; }"
-INFO_STYLE = "QLabel { color: #2e7d32; }"
-HINT_STYLE = "QLabel { color: #555; }"
+ERROR_STYLE = "QLabel { color: %s; }"   # %s: theme token danger_text (readable in light and dark)
+INFO_STYLE = "QLabel { color: %s; }"    # %s: theme token success_text
+HINT_STYLE = "QLabel { color: %s; }"    # %s: theme token muted
 
 # command -> (syntax, description), in the order the hints show them.
 COMMANDS = OrderedDict([
@@ -609,16 +609,14 @@ class CommandBar(QFrame):
         self._draft = ""             # what was typed before Up was pressed
         self.setObjectName("command_bar")
         self.setFrameShape(QFrame.StyledPanel)
-        self.setAutoFillBackground(True)
-        self.setStyleSheet("#command_bar { background: #fafafa; border: 1px solid #9e9e9e;"
-                           " border-radius: 4px; }")
+        self.setAutoFillBackground(True)   # background, border and radius: #command_bar in client/theme.py
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
         self._hints = QLabel()
         self._hints.setTextFormat(Qt.RichText)
-        self._hints.setStyleSheet(HINT_STYLE)
+        self._hints.setStyleSheet(HINT_STYLE % theme.tokens()["muted"])
         layout.addWidget(self._hints)
         self._msg = QLabel()
         self._msg.setWordWrap(True)
@@ -710,7 +708,8 @@ class CommandBar(QFrame):
 
     def _show(self, text, error):
         """Print a result (green) or an error (red) above the line edit."""
-        self._msg.setStyleSheet(ERROR_STYLE if error else INFO_STYLE)
+        self._msg.setStyleSheet(ERROR_STYLE % theme.tokens()["danger_text"] if error
+                                else INFO_STYLE % theme.tokens()["success_text"])
         self._msg.setText(text)
         self._msg.show()
         self._reposition()

@@ -87,7 +87,7 @@ class ViewOnlyBanner(QLabel):
         """Create the hidden banner as a child of `parent` and follow its size."""
         super().__init__("View only: you can watch and chat, but not draw", parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setStyleSheet("background-color: #ffeb3b; color: #333333; font-weight: bold;")
+        self.setObjectName("viewOnlyBanner")   # colours come from client/theme.py
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         parent.installEventFilter(self)
         self.reposition()
@@ -241,6 +241,9 @@ registry.register_menu_action("Session", "Manage roles", open_manage_roles)
 class MainWindow(QMainWindow):
     """The application window, built from the registries."""
 
+    # False: never tab or split the right-hand docks automatically (client/shell.py arranges them).
+    auto_arrange_right = True
+
     # Emitted (GUI thread) with the tool id whenever the active tool changes,
     # whoever changed it. Widgets show the current tool by connecting here.
     tool_selected = pyqtSignal(str)
@@ -393,6 +396,8 @@ class MainWindow(QMainWindow):
         Only acts when the situation changes (narrow <-> wide), so resizing
         within one range never rearranges anything the user has dragged.
         """
+        if not self.auto_arrange_right:
+            return
         narrow = self.width() < NARROW_WIDTH
         if len(self._right_docks) < 2 or narrow == self._right_tabbed:
             return

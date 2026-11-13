@@ -54,7 +54,7 @@ from PyQt5.QtCore import QLineF, QPointF, QRectF, QSizeF, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor, QPainter, QPen
 from PyQt5.QtWidgets import QLabel, QWidget
 
-from client import render
+from client import render, theme
 from common import config
 
 # Zoom limits and the zoom change per wheel notch (120 angle-delta units).
@@ -63,7 +63,7 @@ MAX_ZOOM = 8.0
 ZOOM_STEP = 1.15
 
 # Colors of the background outside the page, the page and its grid.
-OUTSIDE_COLOR = QColor("#d6d6d6")
+OUTSIDE_COLOR = QColor("#d6d6d6")   # fallback; the surround comes from theme.tokens()["surround"]
 PAGE_COLOR = QColor("#ffffff")
 PAGE_BORDER_COLOR = QColor("#616161")
 GRID_COLOR = QColor("#ececec")
@@ -386,7 +386,7 @@ class CanvasWidget(QWidget):
         """
         painter = QPainter(self)
         try:
-            painter.fillRect(self.rect(), OUTSIDE_COLOR)
+            painter.fillRect(self.rect(), QColor(theme.tokens()["surround"]))   # follows light/dark
             self._paint_page_shadow(painter)      # in screen pixels, before the transform
 
             # screen = board * zoom + offset
