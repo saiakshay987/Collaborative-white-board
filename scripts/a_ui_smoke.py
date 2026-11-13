@@ -121,7 +121,16 @@ def child(suffix):
     # --- main window ----------------------------------------------------------------
     window.show()
     window.select_tool("text")                 # opens the text format block (tallest rail)
-    app.toast("Room code K7QX2M copied.")
+    # One toast of each look (the kind is guessed from the wording) and two remote cursors.
+    for text in ("akshay joined", "Connection lost, reconnecting...",
+                 "Only the host can manage roles.", "Room code K7QX2M copied."):
+        app.toast(text)
+    from client import cursor_overlay
+    overlay = cursor_overlay._overlay
+    if overlay is not None:
+        overlay.cursor_received("akshay", 900.0, 700.0)
+        overlay.cursor_received("janith", 1800.0, 1300.0)
+        cursor_overlay.STALE_S = 3600.0         # keep them on screen for every screenshot
     sizes = [SMALL] if suffix else [BIG, SMALL]
     for mode in ("light", "dark"):
         started = time.perf_counter()

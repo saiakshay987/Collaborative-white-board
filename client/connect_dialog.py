@@ -28,15 +28,16 @@ The ERROR handler also turns errors that arrive later (FORBIDDEN, ...) into
 a toast when no dialog is open.
 """
 
+import html
 import threading
 import time
 
-from PyQt5.QtCore import QSettings, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QSettings, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QDialog, QFormLayout, QHBoxLayout,
-                             QHeaderView, QInputDialog, QLabel, QLineEdit, QPushButton,
-                             QStackedWidget, QTableWidget, QTableWidgetItem, QTabWidget,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog, QFormLayout,
+                             QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                             QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
+                             QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from common import config, netinfo, protocol
 from client import icons, net_client, theme
@@ -73,7 +74,7 @@ ROOM_COLUMNS = ["Room", "Host", "Online", "Objects", "Lock", "Updated"]
 LOCK_ICON = "Locked"        # Lock cell text of a password room, shown next to a painted padlock
 LOCK_COLUMN = ROOM_COLUMNS.index("Lock")
 # Columns sized to their contents (the rest share the width), so "10 Nov 14:05" is never cut.
-FIT_COLUMNS = ("Online", "Objects", "Lock", "Updated")
+FIT_COLUMNS = ("Room", "Online", "Objects", "Lock", "Updated")
 
 # The dialog currently waiting for JOIN_OK / ERROR, if any. The on_message
 # handlers below are registered once at import time and forward to it.
@@ -156,12 +157,14 @@ class ConnectDialog(QDialog):
         self.net = app.net
         self._pending = None   # (mode, host, envelope type, payload) of the running attempt
         self.setWindowTitle("LAN Whiteboard: connect")
-        self.setMinimumWidth(420)
+        self.setObjectName("connectDialog")
+        self.setMinimumWidth(580)          # the six room-list columns fit without scrolling
 
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_form_page())
         self.pages.addWidget(self._build_ready_page())
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.addWidget(self.pages)
 
         self.net.connected.connect(self._on_connected)
@@ -185,26 +188,38 @@ class ConnectDialog(QDialog):
     # ----------------------------------------------------------------- layout
 
     def _build_form_page(self):
-        """Page 0: the Host and Join tabs, a status line and the buttons."""
+        """Page 0: the landing card: app name, Host/Join switch, the two forms, message, buttons.
+
+        Host and Join are the two pages of self.tabs (a QTabWidget whose tab bar
+        is hidden); the big segmented switch above it changes the page, and
+        everything that reads self.tabs.currentIndex() works as before.
+        """
         page = QWidget()
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("connectTabs")
+        self.tabs.tabBar().hide()
 
         host_tab = QWidget()
-        form = QFormLayout(host_tab)
-        self.host_name = QLineEdit()
-        self.host_pw = QLineEdit(echoMode=QLineEdit.Password, placeholderText="optional")
-        form.addRow("Username", self.host_name)
-        form.addRow("Password", self.host_pw)
-        form.addRow(QLabel("Start the server on this PC first: python run_server.py"))
+        form = self._form(host_tab)
+        self.host_name = QLineEdit(placeholderText="e.g. Sharwan")
+        self.host_pw = QLineEdit(echoMode=QLineEdit.Password,
+                                 placeholderText="Optional: leave empty for an open room")
+        form.addRow("Your name", self.host_name)
+        form.addRow("Room password", self.host_pw)
+        hint = QLabel("Start the server on this PC first: python run_server.py")
+        hint.setProperty("muted", True)
+        hint.setWordWrap(True)
+        form.addRow(hint)
         self.tabs.addTab(host_tab, "Host")
 
         join_tab = QWidget()
-        form = QFormLayout(join_tab)
-        self.join_ip = QLineEdit(placeholderText="e.g. 192.168.43.57")
-        self.join_code = QLineEdit(placeholderText="6 characters, e.g. K7QX2M")
+        form = self._form(join_tab)
+        self.join_ip = QLineEdit(placeholderText="e.g. 192.168.43.57 (on the host's screen)")
+        self.join_code = QLineEdit(placeholderText="6 letters, e.g. K7QX2M")
         self.join_code.setMaxLength(6)
-        self.join_name = QLineEdit()
-        self.join_pw = QLineEdit(echoMode=QLineEdit.Password, placeholderText="if the room has one")
+        self.join_code.setObjectName("roomCodeInput")
+        self.join_name = QLineEdit(placeholderText="e.g. Akshay")
+        self.join_pw = QLineEdit(echoMode=QLineEdit.Password, placeholderText="Only if the room has one")
         self.test_btn = QPushButton("Test connection")
         self.test_btn.setToolTip("Only tries to open a TCP connection to the server; joins nothing.")
         self.test_btn.clicked.connect(self._test_connection)
@@ -213,91 +228,255 @@ class ConnectDialog(QDialog):
         self.find_btn = QPushButton("Find rooms")
         self.find_btn.setToolTip("Ask the server which rooms it has (refreshes by itself every 5 s).")
         self.find_btn.clicked.connect(lambda: self._find_rooms(manual=True))
-        ip_row = QHBoxLayout()
-        ip_row.addWidget(self.join_ip, 1)
-        ip_row.addWidget(self.test_btn)
-        ip_row.addWidget(self.find_btn)
-        form.addRow("Server IP", ip_row)
+        # The buttons sit under the address field, so nothing is squeezed at 150 % scaling.
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        actions.addWidget(self.test_btn)
+        actions.addWidget(self.find_btn)
+        actions.addStretch(1)
+        form.addRow("Server address", self.join_ip)
+        form.addRow("", actions)
         form.addRow("", self.test_result)
         self.rooms_table = QTableWidget(0, len(ROOM_COLUMNS))
+        self.rooms_table.setObjectName("roomsTable")
         self.rooms_table.setHorizontalHeaderLabels(ROOM_COLUMNS)
         self.rooms_table.verticalHeader().setVisible(False)
+        self.rooms_table.verticalHeader().setDefaultSectionSize(30)
+        self.rooms_table.setShowGrid(False)
         self.rooms_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.rooms_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.rooms_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.rooms_table.setMinimumHeight(120)
+        self.rooms_table.setMinimumHeight(96)
         header = self.rooms_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
         for name in FIT_COLUMNS:
             header.setSectionResizeMode(ROOM_COLUMNS.index(name), QHeaderView.ResizeToContents)
         self.rooms_table.setToolTip("Double-click a room to fill in its code.")
         self.rooms_table.cellDoubleClicked.connect(self._room_chosen)
-        self.rooms_status = QLabel("Enter the server IP to see its rooms.")
+        self.rooms_status = QLabel("Enter the server address to see its rooms.")
         self.rooms_status.setWordWrap(True)
+        self.rooms_status.setProperty("muted", True)
         form.addRow(self.rooms_table)
         form.addRow(self.rooms_status)
         form.addRow("Room code", self.join_code)
-        form.addRow("Username", self.join_name)
+        form.addRow("Your name", self.join_name)
         form.addRow("Password", self.join_pw)
         self.tabs.addTab(join_tab, "Join")
 
+        # Header: app name and tagline.
+        title = QLabel("LAN Whiteboard")
+        title.setObjectName("connectTitle")
+        tagline = QLabel("Draw, write and chat together on your local network.")
+        tagline.setProperty("muted", True)
+
+        # The big two-way switch; it only changes the page of self.tabs.
+        switch = QFrame()
+        switch.setObjectName("segmented")
+        row = QHBoxLayout(switch)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(3)
+        self._segments = QButtonGroup(self)
+        self._segments.setExclusive(True)
+        for index, (text, icon, tip) in enumerate((
+                ("Host a room", "crown", "Start a new room on this PC"),
+                ("Join a room", "users", "Join a room another PC is hosting"))):
+            btn = QPushButton(text)
+            btn.setObjectName("segment")
+            btn.setCheckable(True)
+            btn.setAutoDefault(False)
+            btn.setToolTip(tip)
+            btn.setProperty("iconName", icon)
+            btn.setIconSize(QSize(18, 18))
+            btn.clicked.connect(lambda _checked, i=index: self.tabs.setCurrentIndex(i))
+            self._segments.addButton(btn, index)
+            row.addWidget(btn, 1)
+        self.tabs.currentChanged.connect(self._sync_switch)
+        self._sync_switch(self.tabs.currentIndex())
+
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.RichText)
+        self.status.hide()
         self.go_btn = QPushButton("Connect")
         self.go_btn.setDefault(True)
         self.go_btn.clicked.connect(self._start)
         cancel = QPushButton("Cancel")
+        cancel.setProperty("flat", True)
         cancel.clicked.connect(self.reject)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         buttons.addWidget(cancel)
         buttons.addWidget(self.go_btn)
 
-        layout = QVBoxLayout(page)
+        card = QFrame()
+        card.setObjectName("connectCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
+        layout.addWidget(title)
+        layout.addWidget(tagline)
+        layout.addSpacing(4)
+        layout.addWidget(switch)
         layout.addWidget(self.tabs)
         layout.addWidget(self.status)
         layout.addLayout(buttons)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
         return page
 
+    @staticmethod
+    def _form(parent):
+        """A form layout with labels on the left, fields stretching, friendly spacing."""
+        form = QFormLayout(parent)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        return form
+
+    def _sync_switch(self, index):
+        """Check the switch button of the visible page and paint its icons for the theme."""
+        t = theme.tokens()
+        for button in self._segments.buttons():
+            i = self._segments.id(button)
+            button.setChecked(i == index)
+            colour = t["primary_text"] if i == index else t["text_soft"]
+            button.setIcon(icons.get_icon(button.property("iconName"), 18, colour))
+
     def _build_ready_page(self):
-        """Page 1 (host only): room code and the server's IPs in large text.
+        """Page 1 (host only): room code and the server's IPs in large, readable text.
 
         The likely Wi-Fi / hotspot IP is big; the other usable addresses of
         this PC are listed small below it, with their adapter names, in case
         the big one is the wrong network.
         """
         page = QWidget()
-        big = QFont()
-        big.setPointSize(32)
-        big.setBold(True)
         self.code_label = QLabel()
+        self.code_label.setObjectName("roomCode")
         self.ip_label = QLabel("Looking up addresses...")
+        self.ip_label.setObjectName("serverIp")
+        code_font = QFont()
+        code_font.setPointSize(30)
+        code_font.setBold(True)
+        code_font.setLetterSpacing(QFont.AbsoluteSpacing, 4)
+        self.code_label.setFont(code_font)
+        ip_font = QFont()
+        ip_font.setPointSize(22)
+        ip_font.setBold(True)
+        self.ip_label.setFont(ip_font)
         for label in (self.code_label, self.ip_label):
-            label.setFont(big)
             label.setAlignment(Qt.AlignCenter)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.other_ips_label = QLabel()
         self.other_ips_label.setAlignment(Qt.AlignCenter)
         self.other_ips_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.other_ips_label.setProperty("muted", True)
+        self.other_ips_label.setWordWrap(True)
+        self.copy_code_btn = QToolButton()
+        self.copy_code_btn.setObjectName("copyCode")
+        self.copy_code_btn.setToolTip("Copy the room code")
+        self.copy_code_btn.setIconSize(QSize(20, 20))
+        self.copy_code_btn.setIcon(icons.get_icon("copy", 20, theme.tokens()["text_soft"]))
+        self.copy_code_btn.clicked.connect(
+            lambda: self._copy(self.code_label.text(), "Room code copied"))
         self.copy_btn = QPushButton("Copy code and IP")
-        self.copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(
-            "Room %s at %s" % (self.code_label.text(), self.ip_label.text())))
+        self.copy_btn.clicked.connect(lambda: self._copy(
+            "Room %s at %s" % (self.code_label.text(), self.ip_label.text()), "Code and IP copied"))
+        self.copied = QLabel()
+        self.copied.setProperty("muted", True)
         open_btn = QPushButton("Open whiteboard")
         open_btn.setDefault(True)
         open_btn.clicked.connect(self.accept)
 
-        layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("Room code", alignment=Qt.AlignCenter))
-        layout.addWidget(self.code_label)
-        layout.addWidget(QLabel("Server IP (others type this in Join)", alignment=Qt.AlignCenter))
-        layout.addWidget(self.ip_label)
-        layout.addWidget(self.other_ips_label)
+        heading = QLabel("Your room is ready")
+        heading.setObjectName("connectTitle")
+        sub = QLabel("Read the code and the address out to the lab; they type them in Join.")
+        sub.setProperty("muted", True)
+        sub.setWordWrap(True)
+
+        code_card = QFrame()
+        code_card.setProperty("card", True)
+        code_box = QVBoxLayout(code_card)
+        code_box.setContentsMargins(16, 10, 16, 12)
+        code_title = QLabel("Room code")
+        code_title.setProperty("muted", True)
+        code_title.setAlignment(Qt.AlignCenter)
+        code_row = QHBoxLayout()
+        code_row.addStretch(1)
+        code_row.addWidget(self.code_label)
+        code_row.addWidget(self.copy_code_btn, 0, Qt.AlignVCenter)
+        code_row.addStretch(1)
+        code_box.addWidget(code_title)
+        code_box.addLayout(code_row)
+
+        ip_card = QFrame()
+        ip_card.setProperty("card", True)
+        ip_box = QVBoxLayout(ip_card)
+        ip_box.setContentsMargins(16, 10, 16, 12)
+        ip_title = QLabel("Server address (others type this in Join)")
+        ip_title.setProperty("muted", True)
+        ip_title.setAlignment(Qt.AlignCenter)
+        ip_box.addWidget(ip_title)
+        ip_box.addWidget(self.ip_label)
+        ip_box.addWidget(self.other_ips_label)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.copy_btn)
+        buttons.addWidget(self.copied)
         buttons.addStretch(1)
         buttons.addWidget(open_btn)
+
+        card = QFrame()
+        card.setObjectName("connectCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(24, 20, 24, 18)
+        layout.setSpacing(10)
+        layout.addWidget(heading)
+        layout.addWidget(sub)
+        layout.addWidget(code_card)
+        layout.addWidget(ip_card)
+        layout.addStretch(1)                  # the page is as tall as the Join form: pack at the top
         layout.addLayout(buttons)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
         return page
+
+    def _copy(self, text, done):
+        """Put text on the clipboard and say so next to the buttons for two seconds."""
+        QApplication.clipboard().setText(text)
+        self.copied.setText(done)
+        QTimer.singleShot(2000, lambda: self.copied.setText(""))
+
+    # ---------------------------------------------------------------- messages
+
+    @staticmethod
+    def _tone(label, kind, box=False):
+        """Colour a message label: kind is 'error', 'warning', 'success' or None (plain).
+
+        box=True draws it as a soft coloured box (the main message under the
+        form); otherwise only the text colour changes (inline results).
+        """
+        prop = "tone" if box else "toneText"
+        if box:
+            # Margins, not QSS padding: a word-wrapped QLabel measures its height
+            # without the style sheet's padding, which would squeeze the text.
+            label.setContentsMargins(*((12, 8, 12, 8) if kind else (0, 0, 0, 0)))
+        if label.property(prop) != (kind or ""):
+            label.setProperty(prop, kind or "")
+            theme.repolish(label)
+
+    @staticmethod
+    def _message_html(text):
+        """First line of a message in bold, the rest (advice) smaller below it."""
+        head, _sep, rest = str(text).strip().partition("\n")
+        rest = " ".join(line.strip() for line in rest.splitlines() if line.strip())
+        out = "<b>%s</b>" % html.escape(head)
+        if rest:
+            out += '<br><span style="font-size:9pt">%s</span>' % html.escape(rest)
+        return out
 
     # ------------------------------------------------------------ remembered
 
@@ -338,11 +517,11 @@ class ConnectDialog(QDialog):
         """Test-connection button: TCP connect on a worker thread, show the result."""
         host, port = parse_server(self.join_ip.text())
         if not host:
-            self.test_result.setStyleSheet("color: #c0392b;")
-            self.test_result.setText("Enter the server IP first.")
+            self._tone(self.test_result, "error")
+            self.test_result.setText("Enter the server address first.")
             return
         self.test_btn.setEnabled(False)
-        self.test_result.setStyleSheet("")
+        self._tone(self.test_result, None)
         self.test_result.setText("Testing %s:%d ..." % (host, port))
         # The connect can take up to CONNECT_TIMEOUT_S seconds: never on the GUI thread.
         threading.Thread(target=self._test_worker, args=(host, port),
@@ -359,7 +538,7 @@ class ConnectDialog(QDialog):
     def _show_test_result(self, ok, message, seconds):
         """GUI thread: show the outcome of the connection test."""
         self.test_btn.setEnabled(True)
-        self.test_result.setStyleSheet("color: #1e8449;" if ok else "color: #c0392b;")
+        self._tone(self.test_result, "success" if ok else "error")
         self.test_result.setText("%s (%.0f ms)" % (message, seconds * 1000) if ok else message)
 
     # ------------------------------------------------------------- room list
@@ -379,13 +558,13 @@ class ConnectDialog(QDialog):
         host, port = parse_server(self.join_ip.text())
         if not host:
             if manual:
-                self.rooms_status.setText("Enter the server IP first.")
+                self.rooms_status.setText("Enter the server address first.")
             return
         if self._rooms_busy:
             return
         self._rooms_busy = True
         if manual:
-            self.rooms_status.setStyleSheet("")
+            self._tone(self.rooms_status, None)
             self.rooms_status.setText("Looking for rooms on %s:%d ..." % (host, port))
         threading.Thread(target=self._rooms_worker, args=(host, port),
                          name="room-list", daemon=True).start()
@@ -404,7 +583,7 @@ class ConnectDialog(QDialog):
         if host != parse_server(self.join_ip.text())[0]:
             return
         if rows is None:
-            self.rooms_status.setStyleSheet("color: #c0392b;")
+            self._tone(self.rooms_status, "error")
             self.rooms_status.setText("Cannot list rooms: %s" % error)
             return
         selected = self._selected_code()
@@ -424,7 +603,7 @@ class ConnectDialog(QDialog):
             if row.get("code") == selected:
                 self.rooms_table.selectRow(r)
         self.rooms_table.setUpdatesEnabled(True)
-        self.rooms_status.setStyleSheet("")
+        self._tone(self.rooms_status, None)
         self.rooms_status.setText("%d room%s on this server. Double-click one to join it."
                                   % (len(rows), "" if len(rows) == 1 else "s") if rows
                                   else "No rooms on this server yet. Host one in the Host tab.")
@@ -453,24 +632,29 @@ class ConnectDialog(QDialog):
     # ------------------------------------------------------------------ flow
 
     def _show_error(self, text):
-        """Show text in red and enable the form for another try."""
-        self.status.setStyleSheet("color: #c0392b;")
-        self.status.setText(text)
+        """Show text in a red box under the form and enable it for another try."""
+        self._tone(self.status, "error", box=True)
+        self.status.setText(self._message_html(text))
+        self.status.show()
         self._set_busy(False)
 
     def _show_notice(self, text):
-        """Show why the join screen is back (amber, not an error) and enable the form."""
-        self.status.setStyleSheet("color: #b9770e;")
-        self.status.setText(text)
+        """Show why the join screen is back (amber box, not an error) and enable the form."""
+        self._tone(self.status, "warning", box=True)
+        self.status.setText(self._message_html(text))
+        self.status.show()
         self._set_busy(False)
 
     def _set_busy(self, busy):
         """Disable the form while an attempt is running."""
         self.tabs.setEnabled(not busy)
+        for button in self._segments.buttons():
+            button.setEnabled(not busy)
         self.go_btn.setEnabled(not busy)
         if busy:
-            self.status.setStyleSheet("")
-            self.status.setText("Connecting...")
+            self._tone(self.status, "info", box=True)
+            self.status.setText("<b>Connecting...</b>")
+            self.status.show()
 
     def _start(self):
         """Connect button: validate the form, then connect (or reuse the connection)."""
@@ -485,11 +669,11 @@ class ConnectDialog(QDialog):
             mode, msg_type = "join", protocol.JOIN_ROOM
             payload = {"room": code, "username": name}
             if not host:
-                return self._show_error("Enter the server IP shown on the host's screen.")
+                return self._show_error("Enter the server address shown on the host's screen.")
             if len(code) != 6:
                 return self._show_error("The room code has 6 characters.")
         if not name:
-            return self._show_error("Enter a username.")
+            return self._show_error("Enter your name.")
         if pw:
             payload["password"] = pw
 

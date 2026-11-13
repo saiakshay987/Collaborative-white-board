@@ -3,11 +3,14 @@
 
 Toasts
     app.toast(text) (client/app_state.py) calls show_toast(window, text).
-    A toast is a small dark rounded label in the bottom-right corner of the
-    main window. It fades in, stays, and fades out; its whole life is
-    SHOW_MS (3 s). At most MAX_TOASTS (3) are on screen: the newest is at
-    the bottom, older ones move up, and a 4th pushes the oldest out at
-    once. A click dismisses a toast early.
+    A toast is a rounded card with an icon in the bottom-right corner of
+    the canvas. Its accent colour and icon (info, success, warning, error)
+    are guessed from the wording by toast_kind(); that only changes the look,
+    never the text. It fades and slides in, stays, and fades out; its whole
+    life is SHOW_MS (3 s). At most MAX_TOASTS (3) are on screen: the newest
+    is at the bottom, older ones move up, and a 4th pushes the oldest out at
+    once. Toasts let every click through to what is underneath, so they
+    never block drawing, chatting or typing.
 
     The toasts are child widgets of the main window (they float over the
     canvas and docks), managed by one ToastManager per window. It is found
@@ -38,9 +41,9 @@ import struct
 import tempfile
 import wave
 
-from PyQt5.QtCore import (QEasingCurve, QEvent, QObject, QPropertyAnimation, QRect, Qt, QTimer,
-                          QUrl)
-from PyQt5.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel
+from PyQt5.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QRect, Qt,
+                          QTimer, QUrl)
+from PyQt5.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel
 
 try:  # QtMultimedia is part of PyQt5, but some Linux builds ship without it.
     from PyQt5.QtMultimedia import QSoundEffect
@@ -48,20 +51,20 @@ except ImportError:  # pragma: no cover - depends on the PyQt5 build
     QSoundEffect = None
 
 from common import protocol
+from client import icons, theme
 from client.registry import on_message, register_menu_action
 
 # --- Toast look and timing -----------------------------------------------------
 
 MAX_TOASTS = 3       # visible at the same time
 SHOW_MS = 3000       # whole life of one toast, fades included
-FADE_MS = 250        # fade-in and fade-out duration
-MARGIN = 16          # distance from the window's right and bottom edges
+FADE_MS = 250        # fade-in (and slide-in) and fade-out duration
+SLIDE_PX = 16        # a new toast slides up this far while it fades in
+MARGIN = 16          # distance from the canvas's right and bottom edges
 SPACING = 8          # gap between stacked toasts
-MAX_WIDTH = 340      # longer texts wrap
-PADDING = 10         # inside the rounded box (also in the style sheet)
-
-TOAST_STYLE = ("QLabel { background-color: rgba(40, 40, 40, 225); color: white;"
-               " border-radius: 8px; padding: %dpx; }" % PADDING)
+MAX_WIDTH = 360      # longer texts wrap
+PADDING = 10         # inside the rounded card
+ICON = 18            # icon size
 
 # USER_LEFT reason (contract C1) -> words after the name.
 LEAVE_WORDS = {
@@ -70,29 +73,72 @@ LEAVE_WORDS = {
     "kicked": "was removed by the host",
 }
 
+# Words that hint at the kind of a toast (lower case). Only the LOOK depends
+# on it (accent colour and icon); the text is shown exactly as given.
+ERROR_WORDS = ("cannot", "can't", "could not", "failed", "error", "refused", "forbidden",
+               "wrong", "not allowed", "only the host", "viewers cannot", "does not allow",
+               "too large", "no room", "not connected")
+WARNING_WORDS = ("lost", "reconnecting", "removed", "kicked", "left the room", "timed out",
+                 "offline", "not changed", "nothing to")
+SUCCESS_WORDS = ("copied", "joined", "saved", "reconnected", "back in room", "restored",
+                 "renamed", "deleted", "reset")
 
-class Toast(QLabel):
-    """One notification bubble; fades in, waits, fades out, then deletes itself."""
+# kind -> (icon name, theme token of its colour)
+KIND_LOOK = {"info": ("info", "primary"), "success": ("success", "success"),
+             "warning": ("warning", "warning"), "error": ("error", "danger")}
+
+
+def toast_kind(text):
+    """Guess 'error', 'warning', 'success' or 'info' from the wording (a styling hint only)."""
+    low = str(text).lower()
+    for kind, words in (("error", ERROR_WORDS), ("warning", WARNING_WORDS),
+                        ("success", SUCCESS_WORDS)):
+        if any(word in low for word in words):
+            return kind
+    return "info"
+
+
+class Toast(QFrame):
+    """One notification card: icon + text; fades and slides in, waits, fades out, deletes itself.
+
+    It ignores the mouse (WA_TransparentForMouseEvents): clicks go to the
+    canvas or panel underneath, so a toast can never block drawing or typing.
+    """
 
     def __init__(self, text, parent, on_gone):
         """Create the toast as a child of parent; on_gone(toast) runs when it is removed."""
-        super().__init__(text, parent)
+        super().__init__(parent)
         self._on_gone = on_gone
         self._leaving = False
-        self.setStyleSheet(TOAST_STYLE)
-        self.setWordWrap(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("Click to dismiss")
+        self.kind = toast_kind(text)
+        self.setObjectName("toast")
+        self.setProperty("kind", self.kind)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        icon_name, token = KIND_LOOK[self.kind]
+        self.icon = QLabel()
+        self.icon.setPixmap(icons.pixmap(icon_name, ICON, theme.tokens()[token]))
+        self.icon.setFixedSize(ICON, ICON)
+        self.label = QLabel(text)
+        self.label.setWordWrap(True)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(PADDING + 4, PADDING, PADDING + 2, PADDING)
+        row.setSpacing(10)
+        row.addWidget(self.icon, 0, Qt.AlignTop)
+        row.addWidget(self.label, 1)
         self._fit(text)
 
         # Opacity is animated through a graphics effect (a child widget has
-        # no window opacity of its own).
+        # no window opacity of its own); the slide animates the position.
         self._effect = QGraphicsOpacityEffect(self)
         self._effect.setOpacity(0.0)
         self.setGraphicsEffect(self._effect)
         self._anim = QPropertyAnimation(self._effect, b"opacity", self)
         self._anim.setDuration(FADE_MS)
         self._anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._slide = QPropertyAnimation(self, b"pos", self)
+        self._slide.setDuration(FADE_MS)
+        self._slide.setEasingCurve(QEasingCurve.OutCubic)
 
         # A QTimer owned by the toast dies with it, so it never fires on a
         # deleted widget (QTimer.singleShot with a lambda could).
@@ -101,25 +147,34 @@ class Toast(QLabel):
         self._life.timeout.connect(self.fade_out)
 
     def _fit(self, text):
-        """Size the box to the text: one line if it fits, else wrapped at MAX_WIDTH."""
-        fm = self.fontMetrics()
+        """Size the card to the text: one line if it fits, else wrapped within MAX_WIDTH."""
+        fm = self.label.fontMetrics()
         advance = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
-        # +6: word-wrap layout needs a pixel or two more than the advance.
-        width = min(MAX_WIDTH, advance + 2 * PADDING + 6)
-        # QLabel.heightForWidth ignores the style-sheet padding, so measure
-        # the wrapped text ourselves inside the padded width.
-        inner = QRect(0, 0, width - 2 * PADDING, 10000)
-        text_h = fm.boundingRect(inner, Qt.TextWordWrap, text).height()
-        self.setFixedSize(width, text_h + 2 * PADDING + 2)
+        chrome = ICON + 10 + 2 * PADDING + 8          # icon, gap, padding, accent border
+        text_w = min(MAX_WIDTH - chrome, advance + 6)
+        text_h = fm.boundingRect(QRect(0, 0, text_w, 10000), Qt.TextWordWrap, text).height()
+        self.label.setFixedWidth(text_w)
+        self.setFixedSize(text_w + chrome, max(text_h, ICON) + 2 * PADDING + 2)
 
-    def start(self):
-        """Show the toast, fade it in and start its life timer."""
+    def start(self, target):
+        """Show the toast at QPoint target: fade in while sliding up, then start its life timer."""
+        self.move(target + QPoint(0, SLIDE_PX))
         self.show()
         self.raise_()
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.start()
+        self._slide.setStartValue(target + QPoint(0, SLIDE_PX))
+        self._slide.setEndValue(target)
+        self._slide.start()
         self._life.start(SHOW_MS - FADE_MS)
+
+    def place(self, target):
+        """Move to target (stacking changed); a running slide-in is redirected there."""
+        if self._slide.state() == QPropertyAnimation.Running:
+            self._slide.setEndValue(target)
+        else:
+            self.move(target)
 
     def fade_out(self):
         """Fade out, then remove the toast (only once)."""
@@ -138,20 +193,16 @@ class Toast(QLabel):
         self._leaving = True
         self._life.stop()
         self._anim.stop()
+        self._slide.stop()
         callback, self._on_gone = self._on_gone, None
         if callback is not None:
             callback(self)
             self.hide()
             self.deleteLater()
 
-    def mousePressEvent(self, event):
-        """A click dismisses the toast early."""
-        self.fade_out()
-        event.accept()
-
 
 class ToastManager(QObject):
-    """Keeps the toasts of one window stacked in its bottom-right corner."""
+    """Keeps the toasts of one window stacked in the bottom-right corner of the canvas."""
 
     def __init__(self, window):
         """Attach to window (a QMainWindow) and follow its size changes."""
@@ -167,8 +218,10 @@ class ToastManager(QObject):
             self.toasts[0].remove_now()      # calls _forget, which shortens the list
         toast = Toast(text, self.window, self._forget)
         self.toasts.append(toast)
-        self.layout()
-        toast.start()
+        targets = self._targets()
+        for other in self.toasts[:-1]:
+            other.place(targets[other])
+        toast.start(targets[toast])
 
     def _forget(self, toast):
         """A toast is gone: drop it from the list and close the gap."""
@@ -176,18 +229,34 @@ class ToastManager(QObject):
             self.toasts.remove(toast)
             self.layout()
 
-    def layout(self):
-        """Place the toasts bottom-up, newest lowest, above the status bar."""
+    def _area(self):
+        """The rectangle (window coordinates) the toasts stack in: the canvas, else the window."""
         w = self.window
-        bottom = w.height() - MARGIN
+        central = w.centralWidget() if hasattr(w, "centralWidget") else None
+        if central is not None and central.isVisible():
+            return central.geometry()
+        rect = w.rect()
         bar = w.statusBar() if hasattr(w, "statusBar") else None
         if bar is not None and bar.isVisible():
-            bottom -= bar.height()
+            rect.setBottom(rect.bottom() - bar.height())
+        return rect
+
+    def _targets(self):
+        """{toast: QPoint}: bottom-up from the area's bottom-right corner, newest lowest."""
+        area = self._area()
+        bottom = area.bottom() - MARGIN
+        out = {}
         for toast in reversed(self.toasts):
             bottom -= toast.height()
-            toast.move(w.width() - toast.width() - MARGIN, bottom)
-            toast.raise_()
+            out[toast] = QPoint(area.right() - toast.width() - MARGIN, bottom)
             bottom -= SPACING
+        return out
+
+    def layout(self):
+        """Place every toast at its stacking position, newest lowest."""
+        for toast, target in self._targets().items():
+            toast.place(target)
+            toast.raise_()
 
     def eventFilter(self, obj, event):
         """Re-stack the toasts when the window is resized; never swallow the event."""

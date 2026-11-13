@@ -48,6 +48,7 @@ from PyQt5.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import QWidget
 
+from client import theme
 from client.registry import on_message
 from common import protocol
 
@@ -86,7 +87,7 @@ def _arrow_path():
     pointer.
     """
     path = QPainterPath()
-    pts = [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10.5, 18.8), (7.5, 12), (13, 12)]
+    pts = [(0, 0), (0, 15), (4, 11.5), (6.6, 17.5), (9.2, 16.4), (6.6, 10.6), (11.5, 10.6)]
     path.moveTo(*pts[0])
     for p in pts[1:]:
         path.lineTo(*p)
@@ -316,15 +317,21 @@ class CursorOverlay(QWidget):
             painter.save()
             painter.setOpacity(alpha)
             painter.translate(p)
-            # Arrow: user colour, white outline so it shows on any background.
-            painter.setPen(QPen(Qt.white, 1.5))
+            # Soft shadow, then the arrow in the user colour with a white
+            # outline so it shows on any ink.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 45))
+            painter.drawPath(self.arrow.translated(1.2, 1.6))
+            painter.setPen(QPen(Qt.white, 1.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.setBrush(color)
             painter.drawPath(self.arrow)
-            # Name label: rounded box in the user colour below-right of the tip.
+            # Name tag: a pill in the user colour below-right of the tip, thin
+            # white edge, text black or white, whichever reads better.
             text = cur.name
-            box = QRectF(12, 18, fm.horizontalAdvance(text) + 10, fm.height() + 4)
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(box, 4, 4)
+            h = fm.height() + 4
+            box = QRectF(11, 16, fm.horizontalAdvance(text) + 14, h)
+            painter.setPen(QPen(Qt.white, 1.2))
+            painter.drawRoundedRect(box, h / 2.0, h / 2.0)
             painter.setPen(_text_color(color))
             painter.drawText(box, Qt.AlignCenter, text)
             painter.restore()
@@ -332,9 +339,9 @@ class CursorOverlay(QWidget):
 
 
 def _text_color(bg):
-    """Return black or white, whichever reads better on background colour bg."""
-    luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
-    return QColor("#000000") if luminance > 150 else QColor("#ffffff")
+    """Return near-black or white, whichever has the higher WCAG contrast on colour bg."""
+    dark, light = QColor("#111111"), QColor("#ffffff")
+    return dark if theme.contrast_ratio(dark, bg) >= theme.contrast_ratio(light, bg) else light
 
 
 # --- Install -----------------------------------------------------------------

@@ -494,6 +494,39 @@ QToolButton#sendButton:pressed { background: $primary_hover; }
 QToolButton#sendButton:disabled { background: $disabled_bg; }
 QFrame#metricTile { background: $surface_alt; }
 QLabel#metricValue { font-size: 12pt; font-weight: 600; }
+
+/* ---- connect dialog: landing card (phase 4) ---- */
+QDialog#connectDialog { background: $bg; }
+QFrame#connectCard { background: $surface; border: 1px solid $border; border-radius: ${rk}px; }
+QLabel#connectTitle { font-size: 16pt; font-weight: 700; }
+QFrame#segmented { background: $surface_alt; border: 1px solid $border; border-radius: ${rc}px; }
+QPushButton#segment {
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    padding: 8px 12px; min-height: 22px; font-weight: 600; color: $text_soft;
+}
+QPushButton#segment:hover { background: $hover; }
+QPushButton#segment:checked { background: $surface; color: $primary_text; border-color: $border_strong; }
+QTabWidget#connectTabs::pane { border: none; background: transparent; }
+QLineEdit#roomCodeInput { font-weight: 600; }
+QToolButton#copyCode { padding: 6px; }
+QLabel[tone="error"], QLabel[tone="warning"], QLabel[tone="info"], QLabel[tone="success"] {
+    border-radius: ${rc}px;
+}
+QLabel[tone="error"] { background: $danger_soft; color: $danger_text; }
+QLabel[tone="warning"] { background: $warning_soft; color: $warning_text; }
+QLabel[tone="success"] { background: $success_soft; color: $success_text; }
+QLabel[tone="info"] { background: $primary_soft; color: $primary_text; }
+QLabel[toneText="error"] { color: $danger_text; }
+QLabel[toneText="warning"] { color: $warning_text; }
+QLabel[toneText="success"] { color: $success_text; }
+
+/* ---- toasts (phase 4) ---- */
+QFrame#toast { background: $surface; border: 1px solid $border_strong; border-radius: ${rk}px; }
+QFrame#toast QLabel { background: transparent; color: $text; }
+QFrame#toast[kind="info"] { border-left: 4px solid $primary; }
+QFrame#toast[kind="success"] { border-left: 4px solid $success; }
+QFrame#toast[kind="warning"] { border-left: 4px solid $warning; }
+QFrame#toast[kind="error"] { border-left: 4px solid $danger; }
 QLabel#viewOnlyBanner { background: $warning_soft; color: $warning_text; font-weight: 600; }
 """)
 
