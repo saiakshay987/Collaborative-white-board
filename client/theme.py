@@ -524,6 +524,7 @@ QLabel[toneText="success"] { color: $success_text; }
 QWidget#dockHeader { background: $surface; border-bottom: 1px solid $border; }
 QLabel#dockTitle { font-weight: 600; }
 QToolButton#dockCollapse { padding: 2px; border-radius: 6px; }
+QToolButton#zoomPercent { min-width: 44px; padding: 4px 2px; color: $text_soft; font-weight: 600; }
 QFrame#railDivider { background: $border; border: none; }
 QWidget#compactRail { background: transparent; }
 QMainWindow > QTabBar { background: $surface; border-bottom: 1px solid $border; }
