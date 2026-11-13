@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# OWNER: P1
 # build.sh: build the Linux executables WhiteboardServer, WhiteboardClient and
 # WhiteboardClient-console into dist/linux/.
 #
@@ -77,4 +76,4 @@ echo
 echo "== Result in $DIST"
 ls -lh "$DIST"
 du -sh "$DIST"
-echo "Smoke test:  $VPY scripts/a_exe_smoke.py --dist $DIST"
+echo "Smoke test:  $VPY scripts/exe_smoke_test.py --dist $DIST"

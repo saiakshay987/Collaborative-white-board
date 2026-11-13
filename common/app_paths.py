@@ -1,4 +1,3 @@
-# OWNER: P1
 """app_paths.py: Where the program may keep files that must survive a restart.
 
 A PyInstaller one-file executable unpacks its bundled modules into a fresh

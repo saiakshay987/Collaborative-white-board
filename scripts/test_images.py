@@ -1,7 +1,6 @@
-# OWNER: P3
-"""p3_test_images.py: Tests for the client side of pictures: asset_cache, render_image and tools/image_tool.
+"""test_images.py: Tests for the client side of pictures: asset_cache, render_image and tools/image_tool.
 
-Run from the project root:  python scripts/p3_test_images.py
+Run from the project root:  python scripts/test_images.py
 
 Needs PyQt5, runs on Qt's offscreen platform (no window, NO FONTS: captions paint nothing, so pixel checks use
 the grey fill and the cross, not text) with fake net/canvas objects that only record what happens. One test feeds

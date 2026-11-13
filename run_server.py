@@ -1,4 +1,3 @@
-# OWNER: P1
 """run_server.py: Entry point: starts the whiteboard server.
 
 All the work is in server/server.py (main): it binds 0.0.0.0, prints every

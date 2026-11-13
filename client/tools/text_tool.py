@@ -1,11 +1,10 @@
-# OWNER: P4
 """text_tool.py: Text and sticky-note tools, and the text editor registered with register_editor.
 
 Contract sections D, F and G. Everything here goes through the registries:
 
     TextTool    id 'text'    key T   drag a box, type, Enter sends
     StickyTool  id 'sticky'  key N   click: a 200 x 160 note in the next palette color
-    register_editor('text') and register_editor('sticky'): P2's select tool
+    register_editor('text') and register_editor('sticky'): Akshay's select tool
     calls the editor on a double-click, as fn(app, canvas, obj).
 
 How typing works (InlineEditor)
@@ -35,7 +34,7 @@ at once, confirmed by the server echo):
     format bar change    OP_UPDATE {obj_id, set:{font, size, ...}}  (sent by client/toolbar.py)
 
 The object is checked with kinds_text.validate (the same rules as the server)
-before sending. Moving and resizing are P2's select tool, not repeated here.
+before sending. Moving and resizing are Akshay's select tool, not repeated here.
 Viewers cannot create or edit (toast); the server still checks
 permissions.can(role, 'draw') on every OP_ADD and OP_UPDATE.
 """
@@ -361,7 +360,7 @@ def update_text(app, obj_id, old_text, new_text):
     return True
 
 
-# --- The editor for P2's select tool (double-click) ---------------------------------------
+# --- The editor for Akshay's select tool (double-click) ---------------------------------------
 
 def edit_object(app, canvas, obj):
     """Registered with register_editor for 'text' and 'sticky': edit obj's text in place.

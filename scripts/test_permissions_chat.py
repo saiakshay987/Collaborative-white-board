@@ -1,9 +1,8 @@
-# OWNER: P4
-"""p4_test_permissions.py: unit tests for permissions.can, ChatLog, SET_ROLE, CHAT and the chat hooks.
+"""test_permissions_chat.py: unit tests for permissions.can, ChatLog, SET_ROLE, CHAT and the chat hooks.
 
 Run from the project root with either
-    python scripts/p4_test_permissions.py
-    python -m unittest scripts.p4_test_permissions
+    python scripts/test_permissions_chat.py
+    python -m unittest scripts.test_permissions_chat
 No network is used: sessions, rooms and members are small fakes.
 """
 
@@ -13,7 +12,7 @@ import threading
 import unittest
 from unittest import mock
 
-# Allow `python scripts/p4_test_permissions.py` (script dir is not the root).
+# Allow `python scripts/test_permissions_chat.py` (script dir is not the root).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from common import protocol  # noqa: E402

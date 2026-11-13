@@ -1,7 +1,6 @@
-# OWNER: P1
-"""p1_test_rejoin.py: End-to-end test of leaving a room and joining it again.
+"""test_rejoin.py: End-to-end test of leaving a room and joining it again.
 
-Run from the project root:  python scripts/p1_test_rejoin.py
+Run from the project root:  python scripts/test_rejoin.py
 
 It starts a real server on a free port (data folder: a temp dir, so
 server_data/ is untouched) and talks to it with plain sockets, like the real

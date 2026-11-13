@@ -1,3 +1,4 @@
+Final cleanup done: OWNER lines removed and scripts renamed; the OWNER rule below no longer applies.
 # Whiteboard project rules (read before every task)
 LAN-only multi-user collaborative whiteboard for a Computer Networks lab.
 Python 3.10+, PyQt5,

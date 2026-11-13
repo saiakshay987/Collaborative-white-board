@@ -1,4 +1,3 @@
-# OWNER: P3
 """board_ops.py: Server handlers for OP_ADD, OP_STROKE_PART, OP_UPDATE, OP_DELETE and OP_CLEAR.
 
 Contract sections C2 and E. Every board operation goes through the same

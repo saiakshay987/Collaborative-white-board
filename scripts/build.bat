@@ -1,5 +1,4 @@
 @echo off
-rem OWNER: P1
 rem build.bat: build the Windows executables WhiteboardServer.exe, WhiteboardClient.exe
 rem and WhiteboardClient-console.exe into dist\windows\.
 rem
@@ -11,7 +10,7 @@ rem      python.org Python. Never from Anaconda: PyInstaller would bundle hundre
 rem      of unrelated conda libraries into the executables.
 rem   2. pip install -r requirements.txt pyinstaller
 rem   3. pyinstaller --clean on each spec in packaging\
-rem   4. copy README_RUN.txt and a_open_firewall.ps1 next to the executables, print sizes.
+rem   4. copy README_RUN.txt and open_firewall.ps1 next to the executables, print sizes.
 rem Executables are NOT committed (dist\ and build\ are in .gitignore); they go in the zip.
 setlocal EnableExtensions
 
@@ -73,7 +72,7 @@ for %%S in (WhiteboardServer WhiteboardClient WhiteboardClient-console) do (
 
 rem --- 4. extras next to the executables ----------------------------------------
 copy /y "packaging\README_RUN.txt" "%DIST%\" >nul
-copy /y "scripts\a_open_firewall.ps1" "%DIST%\" >nul
+copy /y "scripts\open_firewall.ps1" "%DIST%\" >nul
 
 echo.
 echo == Missing-module warnings (full log: %LOG%; details: %WORK%\*\warn-*.txt)
@@ -81,5 +80,5 @@ findstr /c:"WARNING" "%LOG%" || echo    (none)
 echo.
 echo == Result in %DIST%
 dir "%DIST%"
-echo Smoke test:  "%VPY%" scripts\a_exe_smoke.py --dist "%DIST%"
+echo Smoke test:  "%VPY%" scripts\exe_smoke_test.py --dist "%DIST%"
 endlocal

@@ -1,4 +1,3 @@
-# OWNER: P1
 """render.py: render_board(painter, objects, ctx): paints the board through the renderer registry.
 
 Contract section F. Each object is painted by the renderer registered for
@@ -7,7 +6,7 @@ its kind (registry.register_renderer). Objects are painted in z order
 Objects without z yet (optimistic local adds waiting for the echo) are
 painted last, on top, in their insertion order.
 
-The same function paints the canvas, and P3's exports reuse it on a QImage
+The same function paints the canvas, and Janith's exports reuse it on a QImage
 or QPdfWriter: it only needs a QPainter.
 """
 

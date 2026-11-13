@@ -1,4 +1,3 @@
-# OWNER: P1
 """registry.py: The client's extension points (contract section G, frozen).
 
 Every feature plugs into the app by registering itself here at import time;

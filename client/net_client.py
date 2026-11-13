@@ -1,4 +1,3 @@
-# OWNER: P1
 """net_client.py: NetClient(QObject): the client's one TCP connection to the server.
 
 Contract sections A, C1, E4 and F (client).

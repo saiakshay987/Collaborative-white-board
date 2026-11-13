@@ -1,4 +1,3 @@
-# OWNER: P1
 """framing.py: Message framing on top of a TCP byte stream (contract section A).
 
 TCP delivers a reliable, ordered stream of BYTES, not of messages: one send()

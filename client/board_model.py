@@ -1,4 +1,3 @@
-# OWNER: P3
 """board_model.py: BoardModel, the client's copy of the board (contract sections E2, E3 and F).
 
 Everything here runs on the GUI thread (net_client delivers incoming messages

@@ -1,4 +1,3 @@
-# OWNER: P3
 """sync.py: Attaches the board to every room and brings joining clients up to date.
 
 Contract sections C3 and E4. Two room hooks (server/rooms.py):

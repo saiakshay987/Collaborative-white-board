@@ -1,4 +1,3 @@
-# OWNER: P2
 """draw_sync.py: Batches stroke points and flushes OP_STROKE_PART messages every 40 ms (at most 50 points per part).
 
 Contract C2 (OP_STROKE_PART) and E3 (optimistic apply).
@@ -26,7 +25,7 @@ live to the others (a film is 24 frames per second).
 Batching matters for network traffic. Without batching, every mouse move is
 one packet, which was about 124 packets per second while drawing. With
 batching it was about 22 packets per second, measured with the traffic panel
-from P1 (framing.STATS, a 5 s scribble with a 125 Hz mouse). The cost is at
+from Sharwan (framing.STATS, a 5 s scribble with a 125 Hz mouse). The cost is at
 most 40 milliseconds of extra delay, which nobody can see.
 
 Set BATCHING = False to send one part per mouse move instead (debug/demo

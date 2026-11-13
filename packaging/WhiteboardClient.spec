@@ -1,4 +1,3 @@
-# OWNER: P1
 # -*- mode: python ; coding: utf-8 -*-
 """WhiteboardClient.spec: PyInstaller recipe for the client executable.
 

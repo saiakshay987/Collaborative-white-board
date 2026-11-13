@@ -1,4 +1,3 @@
-# OWNER: P4
 """render_text.py: Renderers for text and sticky objects.
 
 Contract sections D, F and G. Two functions registered with
@@ -15,8 +14,8 @@ before the fields existed look the same as a default-formatted one.
 
 All coordinates are board units; the caller's painter transform does the zoom,
 so nothing here knows about it. Text longer than the box is CLIPPED to the box:
-the box (which P2's select tool moves and resizes) decides what is visible, and
-the same object looks the same for everybody and in P3's exports.
+the box (which Akshay's select tool moves and resizes) decides what is visible, and
+the same object looks the same for everybody and in Janith's exports.
 
 The font size is a PIXEL size in board units (not a point size), so it does not
 depend on the screen's DPI and every client wraps the text the same way. Words

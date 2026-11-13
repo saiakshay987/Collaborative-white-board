@@ -1,7 +1,6 @@
-# OWNER: P1
-"""p1_test_framing.py: Stress test for common/framing.py over a local socket pair.
+"""test_framing.py: Stress test for common/framing.py over a local socket pair.
 
-Run from the project root:  python scripts/p1_test_framing.py
+Run from the project root:  python scripts/test_framing.py
 
 Checks:
   1. 1000 messages of random sizes (a few bytes up to ~1 MB, with non-ASCII

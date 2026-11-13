@@ -1,7 +1,6 @@
-# OWNER: P3
-"""p3_test_board_model.py: Unit tests for client/board_model.py (contract E2, E3).
+"""test_board_model.py: Unit tests for client/board_model.py (contract E2, E3).
 
-Run from the project root:  python scripts/p3_test_board_model.py
+Run from the project root:  python scripts/test_board_model.py
 
 No window and no sockets. The model's clock is replaced by a fake one and the
 timer callbacks (_on_gap_timeout, _tick) are called by hand, so nothing sleeps.

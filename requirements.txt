@@ -1,2 +1,1 @@
-# OWNER: P1
 PyQt5

@@ -1,7 +1,6 @@
-# OWNER: P3
-"""p3_test_room_list.py: Revision 5 end to end: saved rooms come back after a server restart and are listed.
+"""test_room_list.py: Revision 5 end to end: saved rooms come back after a server restart and are listed.
 
-Run from the project root (no display needed):  python scripts/p3_test_room_list.py
+Run from the project root (no display needed):  python scripts/test_room_list.py
 
 A real server runs in this process (temp data folder, server_data/ is untouched).
 
@@ -43,7 +42,7 @@ from common import protocol  # noqa: E402
 from server import rooms, versions  # noqa: E402
 from server import server as server_mod  # noqa: E402
 
-from p1_test_rejoin import Client, check, FAILS, rect_obj, snapshot_ids  # noqa: E402
+from test_rejoin import Client, check, FAILS, rect_obj, snapshot_ids  # noqa: E402
 
 qapp = QApplication(sys.argv)
 

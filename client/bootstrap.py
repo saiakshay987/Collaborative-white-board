@@ -1,4 +1,3 @@
-# OWNER: P1
 """bootstrap.py: Imports every client module so their registrations run.
 
 Contract section G. Plain static imports (PyInstaller cannot see dynamic

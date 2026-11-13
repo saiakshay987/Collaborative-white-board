@@ -1,7 +1,6 @@
-# OWNER: P1
 """models.py: Merged board-object kinds registry and validate_obj (contract section D).
 
-Each common/kinds_*.py file (P2 draw, P4 text, P3 image) exports
+Each common/kinds_*.py file (Akshay draw, Harshith text, Janith image) exports
     KINDS = {kind: {"required": {field: type}, "defaults": {...},
                     "limits": {field: [min, max]}}}      # limits optional (rev 3)
 This module merges them into one registry and checks objects against it.

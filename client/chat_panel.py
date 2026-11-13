@@ -1,4 +1,3 @@
-# OWNER: P4
 """chat_panel.py: Dock panel for room chat and direct messages.
 
 Contract sections C4 and F (client). The panel is a tab widget: a permanent
@@ -297,7 +296,7 @@ class ChatPanel(QWidget):
     def on_dm_error(self, payload):
         """The server refused my latest DM: say so inside that DM tab.
 
-        P1's generic ERROR toast only gives a generic text for NOT_FOUND, so the
+        Sharwan's generic ERROR toast only gives a generic text for NOT_FOUND, so the
         reason is written into the conversation where the user is looking.
         """
         name = self._last_dm_to

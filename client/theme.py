@@ -1,4 +1,3 @@
-# OWNER: P1
 """theme.py: The client's look: colour tokens, the Qt style sheet, light/dark switching
 and a decorate pass that gives existing widgets icons and style hooks.
 
@@ -9,7 +8,7 @@ is defined ONCE, in TOKENS; the style sheet, the palette and the painted
 icons all read it, so light and dark can never drift apart.
 
 The white board page itself is NOT themed: it is what PNG/PDF export
-produces, so it stays white in both modes (P2's canvas paints it).
+produces, so it stays white in both modes (Akshay's canvas paints it).
 
 Public API
     TOKENS                         {"light": {...}, "dark": {...}} colour tokens
@@ -28,7 +27,7 @@ Public API
                                    after a switch, text-colour tokens written into
                                    a widget's own style sheet follow the new mode
     contrast_ratio(fg, bg)         WCAG ratio; every text token pair is >= 4.5:1
-                                   (checked by scripts/a_ui_smoke.py)
+                                   (checked by scripts/ui_smoke_test.py)
 
 Sizes: one font scale (SMALL_PT 9, BODY_PT 10, TITLE_PT 12, DISPLAY_PT 16 and,
 on the host's "room ready" page only, HEADLINE_PT 22 and HERO_PT 30) and two
@@ -85,7 +84,7 @@ TOKENS = {
         "scroll": "#C9CED6",
         "tooltip_bg": "#1F2430",
         "tooltip_text": "#FFFFFF",
-        "surround": "#E9ECEF",      # canvas around the page (P2 canvas.py reads it)
+        "surround": "#E9ECEF",      # canvas around the page (Akshay's canvas.py reads it)
         "page": "#FFFFFF",          # the board page: white in both modes
     },
     "dark": {
@@ -132,7 +131,7 @@ RADIUS_CONTROL = 8
 RADIUS_CARD = 12
 FONT_STACK = ("Inter", "Segoe UI", "Ubuntu", "Cantarell", "Arial")
 # The one font scale of the UI (points). Every size in the style sheet and in
-# P1's widgets is one of these; nothing else sets a point size.
+# Sharwan's widgets is one of these; nothing else sets a point size.
 SMALL_PT = 9        # pills, hints, section titles of the tool rail, graph labels
 BODY_PT = 10        # everything else
 TITLE_PT = 12       # brand name, metric values
@@ -165,7 +164,7 @@ BUTTON_ICONS = {
     "Test connection": ("plug", False), "Find rooms": ("zoom_in", False),
 }
 
-# Buttons found by objectName (their owners set it) -> (icon, destructive).
+# Buttons found by objectName (their modules set it) -> (icon, destructive).
 NAMED_BUTTON_ICONS = {
     "historySave": ("save", False), "historyRestore": ("history", False),
     "historyRename": ("rename", False), "historyDelete": ("trash", True),
@@ -481,7 +480,7 @@ QScrollArea#dockScroll > QWidget > QWidget { background: transparent; }
 ToolDock QGroupBox { font-size: ${small}pt; border: none; margin-top: 14px; padding-top: 4px; }
 ToolDock FormatBar { border: 1px solid $border; }
 
-/* ---- styling hooks set by the owners' files (approved UI handoff) ---- */
+/* ---- styling hooks set by the widgets' own files (approved UI handoff) ---- */
 #command_bar { background: $surface; border: 1px solid $border_strong; border-radius: ${rc}px; }
 #command_bar QLabel { background: transparent; }
 QToolButton#swatch, QToolButton#inkSwatch {
@@ -647,7 +646,7 @@ def apply_theme(app, mode=None, save=True):
     notifier.changed.emit(mode)
 
 
-# Text-colour tokens that owners' widgets may write into their own style sheet.
+# Text-colour tokens that other modules' widgets may write into their own style sheet.
 TEXT_TOKENS = ("text", "text_soft", "muted", "primary_text", "success_text", "warning_text",
                "danger_text", "disabled_text")
 _COLOR_DECL = re.compile(r"(?<![-\w])(color\s*:\s*)(#[0-9a-fA-F]{6})\b")
@@ -658,7 +657,7 @@ def retint_widget_styles(app, old, new):
 
     A widget's own style sheet beats the application one, so a label that
     was given "color: <muted>" when it was built (for example the command
-    bar's hint line in P2's shortcuts.py) would keep the old mode's colour
+    bar's hint line in Akshay's shortcuts.py) would keep the old mode's colour
     after a switch and fail the 4.5:1 contrast. Only `color:` declarations
     whose value is one of TEXT_TOKENS of the old mode are changed; backgrounds
     (colour swatches, sticky colours) and user colours are left alone.
@@ -720,7 +719,7 @@ def _state_icon(name, size=ICON_SIZE):
 
 
 def _set_name(widget, name):
-    """Give widget an objectName for QSS, but never rename one its owner already named."""
+    """Give widget an objectName for QSS, but never rename one that was already named elsewhere."""
     if not widget.objectName() or widget.objectName() == name:
         widget.setObjectName(name)
 
@@ -766,7 +765,7 @@ def _decorate_small_buttons(root):
             _set_name(btn, "formatToggle")
             icon = FORMAT_TOGGLES[btn.text()]
             if icon:
-                # ICON_TEXT, not ICON_SIZE: P2 fixes these buttons at 26 x 24 px, and the
+                # ICON_TEXT, not ICON_SIZE: Akshay fixes these buttons at 26 x 24 px, and the
                 # alignment icons match the B / I / U letters next to them.
                 btn.setIcon(_state_icon(icon, ICON_TEXT))
                 btn.setIconSize(QSize(ICON_TEXT, ICON_TEXT))
@@ -830,7 +829,7 @@ def decorate_widgets(root):
     """Walk the widget tree of root once and add icons, tooltips and objectNames.
 
     Widgets are found by what they already show (a tool's label, a button's
-    text, a dock's objectName), so other owners' files are not edited. Each
+    text, a dock's objectName), so other modules' files are not edited. Each
     step is wrapped so a widget that is missing or renamed only loses its
     decoration. Safe to call again: apply_theme does so after a theme change
     to repaint the icons in the new colours.

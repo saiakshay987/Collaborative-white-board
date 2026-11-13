@@ -1,11 +1,10 @@
-# OWNER: P1
 """shell.py: Arranges the finished main window from outside: top bar, compact tool rail,
 dock layout, status-bar pills, the stats footer chip and the saved layout.
 
-main_window.py (P4) builds the window from the registries; this module only
+main_window.py (Harshith) builds the window from the registries; this module only
 rearranges and restyles what it built, through public Qt API and the
 objectNames main_window gives its docks (dock_tools, dock_users, dock_chat,
-dock_history, dock_stats) and its tool bar (toolbar_tools). No other owner's
+dock_history, dock_stats) and its tool bar (toolbar_tools). No other module's
 file is edited. run_client.build_window() calls install(app, window) once,
 right after the window exists and before it is shown.
 
@@ -15,9 +14,9 @@ What install() does
       so they are also added to the window itself, where they keep working.
     * Adds TopBar: room-code pill + copy, server address, connection chip,
       Undo, Redo and the theme toggle.
-    * Compacts P2's tool dock: icon-only tool buttons in a 4-column grid,
+    * Compacts Akshay's tool dock: icon-only tool buttons in a 4-column grid,
       small groups side by side, the colour palette in 6 columns. The buttons
-      are P2's own, so tool selection, per-tool memory and the viewer lock
+      are Akshay's own, so tool selection, per-tool memory and the viewer lock
       work exactly as before.
     * Right side: Users above Chat, both always visible. Users is only as tall
       as its rows (it follows UsersPanel.rows_changed); Chat takes the rest
@@ -385,7 +384,7 @@ def _compact_tool_dock(window):
     """Icon-only tool buttons in a 4-column grid; groups of one or two tools side by side.
 
     The buttons were tagged with their tool id by theme.decorate_widgets.
-    Only their size, style and grid position change; P2's signals stay.
+    Only their size, style and grid position change; Akshay's signals stay.
     """
     dock = _dock(window, "dock_tools")
     panel = dock.widget() if dock is not None else None
@@ -809,7 +808,7 @@ class CompactRail(QWidget):
     It only calls MainWindow.select_tool (the one entry point for changing
     tools) and follows MainWindow.tool_selected, so it always agrees with the
     full rail, the shortcuts and the canvas. Viewers get it greyed out, like
-    P2's dock (the server checks the role anyway).
+    Akshay's dock (the server checks the role anyway).
     """
 
     def __init__(self, app, window):

@@ -1,4 +1,3 @@
-# OWNER: P1
 """config.py: Shared constants used by both the server and the client.
 
 Every value here is fixed by docs/CONTRACT.md (sections A, B, D and E).

@@ -1,7 +1,6 @@
-# OWNER: P1
-"""a_exe_smoke.py: Smoke test of the BUILT executables (not the Python sources).
+"""exe_smoke_test.py: Smoke test of the BUILT executables (not the Python sources).
 
-    python scripts/a_exe_smoke.py [--dist dist/linux] [--port 5998] [--client-seconds 5]
+    python scripts/exe_smoke_test.py [--dist dist/linux] [--port 5998] [--client-seconds 5]
 
 Uses only the standard library, so any Python 3 can run it (it does not import
 the project: it talks to the executable over a raw socket, like a client would).

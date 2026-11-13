@@ -1,4 +1,3 @@
-# OWNER: P1
 """server.py: TCP accept loop and one ClientHandler thread per connection.
 
 Networking model (thread per connection):

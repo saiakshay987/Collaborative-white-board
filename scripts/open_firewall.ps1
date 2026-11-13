@@ -1,8 +1,7 @@
-# OWNER: P1
-# a_open_firewall.ps1: let other laptops reach the whiteboard server.
+# open_firewall.ps1: let other laptops reach the whiteboard server.
 #
 # Run in an ADMINISTRATOR PowerShell on the SERVER laptop:
-#     powershell -ExecutionPolicy Bypass -File scripts\a_open_firewall.ps1 [-Port 5050]
+#     powershell -ExecutionPolicy Bypass -File scripts\open_firewall.ps1 [-Port 5050]
 #
 # What it does:
 #   1. Adds an inbound Windows Firewall rule that allows TCP <Port>

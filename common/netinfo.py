@@ -1,4 +1,3 @@
-# OWNER: P1
 """netinfo.py: Find this machine's IPv4 addresses (standard library only).
 
 Used by the server (to print "Clients should connect to: ...") and by the

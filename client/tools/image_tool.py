@@ -1,4 +1,3 @@
-# OWNER: P3
 """image_tool.py: Put a picture on the board: pick a file, shrink it, upload it in chunks, then add an image object (contract C3, D).
 
 Two ways in, both ending in start_upload():

@@ -1,7 +1,6 @@
-# OWNER: P1
 """ops.py: send_op, the single path for every board change (contract section F, frozen).
 
-Every tool (P2, P3, P4) changes the board ONLY through send_op; nobody sends
+Every tool (Akshay, Janith, Harshith) changes the board ONLY through send_op; nobody sends
 OP_* with net.send directly. send_op implements optimistic apply (contract
 E3): the change is applied locally at once, remembered as pending by op_id,
 and the server's echo (same op_id, now with seq) later confirms it.

@@ -1,4 +1,3 @@
-# OWNER: P3
 """asset_cache.py: Client-side cache of the pictures of image objects, fetched from the server with ASSET_GET (contract C3).
 
 An image object only carries an asset_id (see common/kinds_image.py). The renderer asks this cache for the

@@ -1,4 +1,3 @@
-# OWNER: P1
 """dispatcher.py: Routes every incoming message to the handler registered for its type.
 
 Contract section F (server). Feature modules register handlers with
