@@ -493,12 +493,15 @@ def _hide_text_toolbar(window):
 def _stop_right_dock_juggling(window):
     """Keep Users above Chat at every window width.
 
-    main_window._update_right_docks tabs or splits the right-hand docks again
-    whenever the window crosses NARROW_WIDTH, which would undo the arrangement
-    below. That method returns at once when it knows fewer than two right
-    docks, so its private list is emptied ONCE here (approved by P1 for the
-    UI polish; the clean fix is in docs/ui_handoff_for_akshay.md for P4).
+    MainWindow tabs or splits its right-hand docks whenever the window
+    crosses NARROW_WIDTH, which would undo the arrangement below. Its public
+    switch auto_arrange_right turns that off. A window without the switch
+    (an older main_window.py) gets its private list emptied instead, which
+    makes the same method return early.
     """
+    if hasattr(type(window), "auto_arrange_right"):
+        window.auto_arrange_right = False
+        return
     try:
         window._right_docks = []
     except Exception as exc:  # noqa: BLE001

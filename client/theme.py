@@ -74,7 +74,7 @@ TOKENS = {
         "scroll": "#C9CED6",
         "tooltip_bg": "#1F2430",
         "tooltip_text": "#FFFFFF",
-        "surround": "#E9EBEF",      # suggested canvas colour around the page (handoff)
+        "surround": "#E9ECEF",      # canvas around the page (P2 canvas.py reads it)
         "page": "#FFFFFF",          # the board page: white in both modes
     },
     "dark": {
@@ -108,7 +108,7 @@ TOKENS = {
         "scroll": "#3A404B",
         "tooltip_bg": "#2A2F37",
         "tooltip_text": "#E6E8EC",
-        "surround": "#0F1114",
+        "surround": "#14161A",      # = bg: the white page floats on the dark window
         "page": "#FFFFFF",
     },
 }
@@ -141,6 +141,13 @@ BUTTON_ICONS = {
     "Delete": ("trash", True), "Restore": ("history", False), "Save version": ("save", False),
     "Copy stats": ("copy", False), "Copy code and IP": ("copy", False),
     "Test connection": ("plug", False), "Find rooms": ("zoom_in", False),
+}
+
+# Buttons found by objectName (their owners set it) -> (icon, destructive).
+NAMED_BUTTON_ICONS = {
+    "historySave": ("save", False), "historyRestore": ("history", False),
+    "historyRename": ("rename", False), "historyDelete": ("trash", True),
+    "historyUndo": ("undo", False), "historyRedo": ("redo", False),
 }
 
 # Menu entries (by their text) that get an icon.
@@ -187,6 +194,25 @@ def tokens(mode=None):
 def color(name, mode=None):
     """Return token `name` of mode (default: active) as a QColor."""
     return QColor(tokens(mode)[name])
+
+
+def readable(color, bg, minimum=4.5):
+    """Return color ('#rrggbb') lightened or darkened until it reaches `minimum` contrast on bg.
+
+    Used for text drawn in a user's colour (chat names) so it stays readable
+    in both themes; the hue is kept, only the lightness moves.
+    """
+    c, back = QColor(color), QColor(bg)
+    if not c.isValid():
+        return tokens()["text"]
+    lighten = back.lightness() < 128
+    for _ in range(20):
+        if contrast_ratio(c, back) >= minimum:
+            break
+        h, s, l, a = c.getHslF()
+        l = min(1.0, l + 0.06) if lighten else max(0.0, l - 0.06)
+        c = QColor.fromHslF(max(h, 0.0), s, l, a)
+    return c.name()
 
 
 def contrast_ratio(fg, bg):
@@ -431,8 +457,29 @@ ToolDock QGroupBox { font-size: ${small}pt; border: none; margin-top: 14px; padd
 ToolDock FormatBar {
     font-size: ${body}pt; border: 1px solid $border; margin-top: 18px; padding: 10px 8px 8px 8px;
 }
-HistoryPanel QPushButton { padding: 3px 10px; min-height: 16px; }
 QStatusBar { min-height: 28px; }
+
+/* ---- styling hooks set by the owners' files (approved UI handoff) ---- */
+#command_bar { background: $surface; border: 1px solid $border_strong; border-radius: ${rc}px; }
+#command_bar QLabel { background: transparent; }
+QToolButton#swatch, QToolButton#inkSwatch {
+    border: 1px solid $border_strong; border-radius: 12px; padding: 0px;
+}
+QToolButton#swatch:hover, QToolButton#inkSwatch:hover { border-color: $muted; }
+QToolButton#swatch:checked {
+    border: 2px solid $primary; padding: 2px; background-clip: content; border-radius: 12px;
+}
+QToolButton#swatch:disabled { border: 1px dashed $disabled_text; }
+QLabel#currentSwatch { border: 1px solid $border_strong; border-radius: 12px; }
+QLabel#viewerHint {
+    background: $warning_soft; color: $warning_text; border: 1px solid $warning_soft;
+    border-radius: ${rc}px; padding: 8px;
+}
+HistoryPanel QTableWidget { gridline-color: transparent; }
+HistoryPanel QTableWidget::item { border-bottom: 1px solid $border; padding: 4px 10px; }
+HistoryPanel QTableWidget::item:selected { background: $primary_soft; color: $primary_text; }
+HistoryPanel QPushButton { padding: 4px 8px; min-height: 16px; }
+HistoryPanel QPushButton#historySave { padding: 4px 12px; }
 QLabel#viewOnlyBanner { background: $warning_soft; color: $warning_text; font-weight: 600; }
 """)
 
@@ -631,7 +678,7 @@ def _decorate_push_buttons(root):
         if btn.isDefault() and not btn.property("primary"):
             btn.setProperty("primary", True)
             repolish(btn)
-        entry = BUTTON_ICONS.get(btn.text())
+        entry = NAMED_BUTTON_ICONS.get(btn.objectName()) or BUTTON_ICONS.get(btn.text())
         if entry is None:
             continue
         name, danger = entry
